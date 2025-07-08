@@ -80,9 +80,8 @@ def extract_db_values_from_sql(sql: str, dialect: str = "sqlite", database_schem
                 db_values[(actual_table_name, actual_column_name)].append(condition_expr.expression.name)
     return db_values
 
-
 if __name__ == "__main__":
-    database_schema = DatabaseManager.get_database_schema("card_games", "data/bird/dev/dev_databases")
+    database_schema = DatabaseManager.get_database_schema("card_games", "/home/banlujie/data/bird_dev/dev_databases")
     print(extract_db_values_from_sql(
         "SELECT COUNT(id) FROM cards WHERE setCode IN ( SELECT code FROM sets WHERE name = 'World Championship Decks 2004' ) AND convertedManaCost = 3",
         database_schema=database_schema

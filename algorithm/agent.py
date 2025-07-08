@@ -1,29 +1,38 @@
 import torch
-from transformers import AutoTokenizer,AutoModel
+from transformers import AutoTokenizer, AutoModel
+
+from algorithm.action_parser import parse_action
+from algorithm.casual import MiniBertConfig
+from critic import VLMDoubleCritic, TrajectoryCritic
 import signal
+
 
 class Timeout:
     def __init__(self, seconds=1, error_message='Timeout'):
         self.seconds = seconds
         self.error_message = error_message
+
     def handle_timeout(self, signum, frame):
         raise TimeoutError(self.error_message)
+
     def __enter__(self):
         signal.signal(signal.SIGALRM, self.handle_timeout)
         signal.alarm(self.seconds)
+
     def __exit__(self, type, value, traceback):
         signal.alarm(0)
 
+
 class GenerateAgent(torch.nn.Module):
-    def __init__(self, device, accelerator, policy_lm = "gpt2", critic_lm = "roberta-base",
-                cache_dir = '~/.cache', dropout = 0.5, TEMPLATE = None, use_lora=False,
-                do_sample = True, temperature = 1.0, max_new_tokens = 32, use_bfloat16 = False, eos_str = None,
-                use_causal = False, causal_save_path = None,
-                ):
+    def __init__(self, device, accelerator, policy_lm="gpt2", critic_lm="roberta-base",
+                 cache_dir='~/.cache', dropout=0.5, TEMPLATE=None, use_lora=False,
+                 do_sample=True, temperature=1.0, max_new_tokens=32, use_bfloat16=False, eos_str=None,
+                 use_causal=False, causal_save_path=None,
+                 ):
         super(GenerateAgent, self).__init__()
         if use_bfloat16:
             self.model = AutoModel.from_pretrained(policy_lm, cache_dir=cache_dir,
-                                                              torch_dtype = torch.bfloat16).to(device)
+                                                   torch_dtype=torch.bfloat16).to(device)
         else:
             self.model = AutoModel.from_pretrained(policy_lm, cache_dir=cache_dir).to(device)
         if use_lora:
@@ -40,8 +49,10 @@ class GenerateAgent(torch.nn.Module):
             self.model.print_trainable_parameters()
         self.template = TEMPLATE
         self.policy_lm = policy_lm
-        self.critic = VLMDoubleCritic(device, accelerator, critic_lm = critic_lm, cache_dir = cache_dir, in_dim = 768, out_dim = 1)
-        self.trajectory_critic = TrajectoryCritic(device, accelerator, critic_lm = critic_lm, cache_dir = cache_dir, in_dim = 768, out_dim = 1)
+        self.critic = VLMDoubleCritic(device, accelerator, critic_lm=critic_lm, cache_dir=cache_dir, in_dim=768,
+                                      out_dim=1)
+        self.trajectory_critic = TrajectoryCritic(device, accelerator, critic_lm=critic_lm, cache_dir=cache_dir,
+                                                  in_dim=768, out_dim=1)
         self.target_critic = None
         self.tokenizer = AutoTokenizer.from_pretrained(policy_lm, trust_remote_code=True, cache_dir=cache_dir)
         self.tokenizer.truncation_side = 'left'
@@ -50,19 +61,15 @@ class GenerateAgent(torch.nn.Module):
 
         config = MiniBertConfig(vocab_size=self.tokenizer.vocab_size,
                                 hidden_size=128,
-                                intermediate_size = 128 * 4,
-                                num_labels=len(ActionType),
+                                intermediate_size=128 * 4,
                                 num_attention_heads=4,
                                 num_hidden_layers=3,
                                 )
         self.use_causal = use_causal
-        if self.use_causal:
-            self.causal_model = MiniBertForSequenceClassification(config, accelerator).to(device)
-            self.causal_executor = CausalExecutor(self.tokenizer, device, causal_save_path = causal_save_path)
 
         self.device = device
         self.dropout = torch.nn.Dropout(p=dropout)
-        self.softmax = torch.nn.Softmax(dim= -1)
+        self.softmax = torch.nn.Softmax(dim=-1)
         self.do_sample = do_sample
         self.temperature = temperature
         self.accelerator = accelerator
@@ -118,7 +125,6 @@ class GenerateAgent(torch.nn.Module):
             image_features = image_features[valids == 1]
             act_labels = [label for label, v in zip(act_labels, valids) if v == 1]
 
-        image_features = image_features[..., -1408:]
         if self.template is not None:
             observation = [self.template.replace("{obs}", obs) for obs in observation]
         obs_ids = self.tokenizer(observation, return_tensors='pt', padding=True, max_length=512, truncation=True).to(
