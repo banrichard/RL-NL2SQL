@@ -1,5 +1,5 @@
 import json
-import sqlite3
+import pysqlite3 as sqlite3
 import os
 import tqdm
 from collections import defaultdict
@@ -83,6 +83,20 @@ def serialize_schema(schema_info: dict) -> str:
 
     return "\n".join(create_statements)
 
+
+def execute_sql(db_path: str, sql: str):
+    """在指定的 SQLite 資料庫上執行 SQL 並回傳結果。"""
+    if not os.path.exists(db_path):
+        return "Error: Database not found"
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            result = cursor.fetchall()
+            # 將結果轉換為可比較的格式 (例如，排序後的元組)
+            return sorted(list(result))
+    except Exception as e:
+        return f"Error: {e}"
 
 def build_dataset(train_path="train.json", tables_path="train_table.json",
                   output_path="/home/banlujie/data/bird_train/train/text2sql_sft_dataset.jsonl"):
@@ -184,7 +198,7 @@ def validate_dataset(train_path="train.json", db_root_path="train_databases"):
     print(f"无效样本数: {invalid_count}")
 
     # 可以选择将清洗后的有效数据保存到新文件
-    clean_train_path = "train_clean.json"
+    clean_train_path = os.path.join(os.path.dirname(train_path),"train_clean.json")
     invalid_record_path = os.path.join(os.path.dirname(train_path), "invalid_records.json")
     with open(clean_train_path, 'w', encoding='utf-8') as f_out:
         json.dump(valid_samples, f_out, indent=4)
@@ -197,6 +211,6 @@ def validate_dataset(train_path="train.json", db_root_path="train_databases"):
 
 if __name__ == "__main__":
     # 假设你的文件名为 train.json 和 train_table.json
-    # build_dataset(train_path="/home/banlujie/data/bird_train/train/train.json", tables_path="/home/banlujie/data/bird_train/train/train_tables.json")
-    validate_dataset(train_path="/home/banlujie/data/bird_train/train/train.json",
-                     db_root_path="/home/banlujie/data/bird_train/train/train_databases")
+    build_dataset(train_path="/home/banlujie/data/bird_train/train/train_clean.json", tables_path="/home/banlujie/data/bird_train/train/train_tables.json")
+    # validate_dataset(train_path="/home/banlujie/data/bird_train/train/train.json",
+    #                  db_root_path="/home/banlujie/data/bird_train/train/train_databases")
