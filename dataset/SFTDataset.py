@@ -2,12 +2,12 @@ from typing import Callable
 
 import torch
 from torch.utils.data import Dataset
-
+from datasets import load_dataset
 from openrlhf.utils.utils import zero_pad_sequences
 
 
 def preprocess_data(
-    data, input_template=None, input_key="input", output_key=None, apply_chat_template=None, multiturn=False
+    data, input_template=None, input_key=["input","question","evidence"], output_key=None, apply_chat_template=None, multiturn=False
 ):
     if apply_chat_template:
         if output_key:
@@ -227,3 +227,9 @@ class SFTDataset(Dataset):
         attention_masks = zero_pad_sequences(attention_masks, "right")
         loss_masks = zero_pad_sequences(loss_masks, "right")
         return input_ids, attention_masks, loss_masks
+
+if __name__ == "__main__":
+    # Example usage
+    from transformers import AutoTokenizer
+    dataset = load_dataset("json",data_files="/home/banlujie/data/bird_train/train/train_clean.json", split="train")
+    sft_dataset = SFTDataset(dataset, AutoTokenizer.from_pretrained("gpt2"), 512, None, multiturn=True)
