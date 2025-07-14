@@ -1,7 +1,7 @@
 #!/bin/bash
 
  deepspeed --module --include localhost:3,4,5,6 openrlhf.cli.train_sft \
-   --save_path ../ckpt \
+    --save_path ./checkpoint/phi4_mini_reasoning \
    --max_len 2048 \
    --dataset /home/banlujie/data/bird_train/train/train_clean.json \
    --input_key question \
@@ -10,7 +10,6 @@
    --micro_train_batch_size 2 \
    --max_samples 500000 \
    --pretrain microsoft/Phi-4-mini-reasoning \
-   --save_path ./checkpoint/phi4_mini_reasoning \
    --save_steps 1000 \
    --logging_steps 10 \
    --eval_steps -1 \
