@@ -4,6 +4,9 @@ You are a data science expert. Below, you are provided with a database schema an
 Database Engine:
 {db_engine}
 
+Database ID:
+{db_id}
+
 Database Schema:
 {db_details}
 This schema describes the database's structure, including tables, columns, primary keys, foreign keys, and any relevant relationships or constraints.
@@ -14,7 +17,6 @@ Question:
 Instructions:
 - Make sure you only output the information that is asked in the question. If the question asks for a specific column, make sure to only include that column in the SELECT clause, nothing more.
 - The generated query should return all of the information asked in the question without any missing or extra information.
-- Before generating the final SQL query, please think through the steps of how to write the query.
 - Note that while the reasoning process and SQL query need to be enclosed within <think> </think> and <answer> </answer> tags respectively, this should not affect the quality of the SQL generation.
 - The answer must contain the SQL query within ```sql ``` tags.
 

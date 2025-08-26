@@ -4,6 +4,7 @@ from collections import defaultdict
 import re
 import signal
 
+
 def serialize_schema(schema_info: dict) -> str:
     """
     (Final, Robust Version)
@@ -84,49 +85,57 @@ def serialize_schema(schema_info: dict) -> str:
 
 
 def execute_sql(db_path: str, sql: str):
-    """在指定的 SQLite 資料庫上執行 SQL 並回傳結果。"""
+    """
+    Executes a SQL query on the given SQLite database and returns the results.
+    """
     if not os.path.exists(db_path):
         return "Error: Database not found"
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(sql)
-            result = cursor.fetchall()
-            # 將結果轉換為可比較的格式 (例如，排序後的元組)
-            return sorted(list(result))
+            result =  sorted(cursor.fetchall(), key=lambda row: tuple(str(x) for x in row))
+            return result
+
     except Exception as e:
         return f"Error: {e}"
 
 
 def extract_sql_from_output(raw_output: str) -> str:
     """
-    專門從模型輸出中提取 ```sql ... ``` 程式碼區塊內的 SQL 查詢。
+    一個強健的 SQL 提取函式，優先尋找被 <answer> 和 ```sql 標籤共同包裹的查詢。
     """
     if not isinstance(raw_output, str):
         return ""
 
     raw_output = raw_output.strip()
 
-    # 使用正規表示式尋找 ```sql ... ``` 區塊
+    # --- 策略一：尋找被 <answer> 和 ```sql 共同包裹的 SQL (最高優先級) ---
+    # 這個正規表示式尋找 <answer> 標籤內部的 sql 程式碼區塊
     # re.DOTALL 允許 '.' 匹配換行符
-    # re.IGNORECASE 忽略 'sql' 的大小寫
-    sql_match = re.search(r"```sql\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+    # re.IGNORECASE 忽略 'sql' 和 'answer' 的大小寫
+    perfect_match = re.search(
+        r"<answer>.*?```sql\s*(.*?)\s*```.*?</answer>",
+        raw_output,
+        re.DOTALL | re.IGNORECASE
+    )
+    if perfect_match:
+        # group(1) 獲取的是第一個括號 (.*?) 內的匹配內容，也就是純淨的 SQL
+        return perfect_match.group(1).strip()
 
-    if sql_match:
-        # group(1) 獲取的是第一個括號內的匹配內容
-        return sql_match.group(1).strip()
-    else:
-        # 如果沒有找到標準的 ```sql ... ``` 區塊，
-        # 作為備用方案，可以嘗試尋找以 '--' 或 'SELECT' 開頭的程式碼片段
-        # 這有助於處理模型未能完整生成 ```sql 標籤的情況
-        lines = raw_output.splitlines()
-        for i, line in enumerate(lines):
-            line_stripped = line.strip().upper()
-            if line_stripped.startswith("-- YOUR SQL QUERY") or line_stripped.startswith("SELECT"):
-                # 回傳從這一行開始的所有內容
-                return "\n".join(lines[i:]).strip()
+    # --- 備用策略二：只尋找 ```sql ... ``` 區塊 ---
+    # 如果模型忘記了 <answer> 標籤，這個策略能補救
+    sql_block_match = re.search(r"```sql\s*(.*?)\s*```", raw_output, re.DOTALL | re.IGNORECASE)
+    if sql_block_match:
+        return sql_block_match.group(1).strip()
 
-    # 如果所有策略都失敗，回傳空字串
+    # --- 備用策略三：尋找最後一個出現的 SELECT ---
+    # 作為最終的保險措施，以應對模型完全沒給出任何標籤的情況
+    last_select_pos = raw_output.upper().rfind("SELECT")
+    if last_select_pos != -1:
+        return raw_output[last_select_pos:].strip()
+
+    # --- 如果所有策略都失敗 ---
     return ""
 
 
@@ -140,15 +149,18 @@ def get_detailed_score(db_path: str, sql_to_evaluate: str, ground_truth_result: 
     else:
         # 執行成功，比較結果
         is_correct = (eval_result == ground_truth_result)
-        score = 2.0 if is_correct else -1.0
+        score = 2.0 if is_correct else 1.0  # 完全正確得 2 分，部分正確得 1 分
         return {"sql": sql_to_evaluate, "score": score, "is_correct": is_correct, "error": None}
+
 
 class TimeoutException(Exception):
     pass
 
+
 def timeout_handler(signum, frame):
     """超時信號的處理函式，直接拋出異常"""
     raise TimeoutException("SQL 執行超時！")
+
 
 def execute_sql_with_timeout(db_path, sql, timeout_seconds=5):
     """
@@ -164,11 +176,11 @@ def execute_sql_with_timeout(db_path, sql, timeout_seconds=5):
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(sql)
-            result = sorted(list(cursor.fetchall()))
-
+            result = cursor.fetchall()
+            filtered_result = sorted(result, key=lambda row: tuple(str(x) for x in row))
         # 如果成功執行，取消鬧鐘
         signal.alarm(0)
-        return result
+        return filtered_result
     except TimeoutException as e:
         # 如果捕獲到我們自訂的超時異常
         return f"Error: {e}"

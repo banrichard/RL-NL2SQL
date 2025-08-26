@@ -1,28 +1,27 @@
 #!/bin/bash
 
  deepspeed --module --include localhost:3,4,5,6 openrlhf.cli.train_sft \
-    --save_path ./checkpoint/phi4_mini_reasoning \
-   --max_len 2048 \
-   --dataset /home/banlujie/data/bird_train/train/train_clean.json \
-   --input_key question \
+   --save_path ./ckpt/phi4_mini_reasoning \
+   --max_len 4096 \
+   --dataset /home/banlujie/data/bird_train/train/train_sft.json \
+   --eval_dataset /home/banlujie/data/bird_train/train/eval_sft.json\
+   --input_key prompt \
    --output_key SQL \
+   --apply_chat_template \
    --train_batch_size 256 \
-   --micro_train_batch_size 2 \
+   --micro_train_batch_size 4 \
    --max_samples 500000 \
    --pretrain microsoft/Phi-4-mini-reasoning \
-   --save_steps 1000 \
+   --packing_samples \
+   --save_steps 40 \
    --logging_steps 10 \
-   --eval_steps -1 \
+   --eval_steps 40 \
    --zero_stage 2 \
-   --max_epochs 10 \
+   --max_epochs 20 \
    --bf16 \
    --flash_attn \
-   --learning_rate 5e-6 \
+   --learning_rate 2.5e-6 \
    --load_checkpoint \
-   --packing_samples \
    --gradient_checkpointing \
-   --use_wandb False \
+   --use_wandb True \
    --wandb_project entropy_rl \
-#     --wandb 5c00be123cfc09b2a58a5d1071ffbfba53cd88d3
-    # --packing_samples
-
