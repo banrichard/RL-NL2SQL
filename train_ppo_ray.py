@@ -1,3 +1,7 @@
+import os
+os.environ['http_proxy']="127.0.0.1:7890"
+os.environ['https_proxy']="127.0.0.1:7890"
+
 import argparse
 from datetime import datetime
 
@@ -11,6 +15,7 @@ from openrlhf.trainer.ray.launcher import (
 )
 from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
+from algorithm.credit_model_actor import CreditModelActor
 from openrlhf.utils import get_strategy
 
 
@@ -133,30 +138,288 @@ def train(args):
     else:
         reward_model = None
 
+    # Credit Model for fine-grained credit assignment
+    credit_model = None
+    if args.credit_pretrain:
+        credit_model = RayActorGroup(
+            args.credit_num_nodes,
+            args.credit_num_gpus_per_node,
+            CreditModelActor,
+            pg=pg,
+            num_gpus_per_actor=0.2 if pg else 1,
+            duplicate_actors=args.ring_attn_size * args.ds_tensor_parallel_size,
+        )
+
+    # Import Credit Model components for simple integration
+    if args.credit_pretrain:
+        try:
+            from algorithm.simple_credit_integration import create_credit_enhanced_ppo_trainer
+        except ImportError:
+            print("Warning: Could not import credit integration, using standard PPO")
+            credit_model = None
+
+    # 子句级别信用分配集成
+    clause_credit_enhanced_trainer = None
+    if args.credit_pretrain and hasattr(args, 'enable_clause_credit') and args.enable_clause_credit:
+        print("Setting up clause-level credit assignment...")
+        try:
+            from algorithm.clause_credit_integration import ClauseCreditIntegration
+            from transformers import AutoTokenizer
+            
+            # 加载tokenizer
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(args.pretrain)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                print(f"Loaded tokenizer for clause credit: {args.pretrain}")
+            except Exception as e:
+                print(f"Warning: Failed to load tokenizer for clause credit: {e}")
+                tokenizer = None
+            
+            if tokenizer:
+                # 创建子句级别信用分配集成
+                clause_integration = ClauseCreditIntegration(
+                    tokenizer=tokenizer,
+                    credit_model_path=args.credit_pretrain,
+                    discount_factor=getattr(args, 'clause_discount_factor', 0.99),
+                    device="cuda"
+                )
+                
+                print("Clause-level credit assignment integration created successfully")
+                print(f"Credit model path: {args.credit_pretrain}")
+                print(f"Discount factor: {getattr(args, 'clause_discount_factor', 0.99)}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to setup clause-level credit assignment: {e}")
+            clause_integration = None
+    else:
+        clause_integration = None
+
+    # 分离式奖励系统集成
+    separated_reward_integration = None
+    if args.credit_pretrain and hasattr(args, 'enable_separated_rewards') and args.enable_separated_rewards:
+        print("Setting up separated reward system...")
+        try:
+            from algorithm.separated_reward_system import SeparatedRewardPPOIntegration
+            from transformers import AutoTokenizer
+            
+            # 加载tokenizer（如果之前没有加载）
+            if 'tokenizer' not in locals() or tokenizer is None:
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(args.pretrain)
+                    if tokenizer.pad_token is None:
+                        tokenizer.pad_token = tokenizer.eos_token
+                    print(f"Loaded tokenizer for separated rewards: {args.pretrain}")
+                except Exception as e:
+                    print(f"Warning: Failed to load tokenizer for separated rewards: {e}")
+                    tokenizer = None
+            
+            if tokenizer:
+                # 创建分离式奖励系统集成
+                separated_reward_integration = SeparatedRewardPPOIntegration(
+                    tokenizer=tokenizer,
+                    credit_model_path=args.credit_pretrain,
+                    discount_factor=getattr(args, 'clause_discount_factor', 0.99),
+                    device="cuda"
+                )
+                
+                print("Separated reward system integration created successfully")
+                print("Credit Model: 中间步骤即时奖励 (t=0,1,...,T-1)")
+                print("Reward Model: 终端步骤完整奖励 (t=T)")
+                print("奖励分离: Credit Model和Reward Model永不同时工作")
+                
+        except Exception as e:
+            print(f"Warning: Failed to setup separated reward system: {e}")
+            separated_reward_integration = None
+    else:
+        separated_reward_integration = None
+
     if args.async_train:
         from openrlhf.trainer.ppo_trainer_async import PPOTrainerAsync as PPOTrainer
     else:
         from openrlhf.trainer.ppo_trainer import PPOTrainer
 
+    # Use simple credit integration if available
+    if credit_model is not None and args.credit_pretrain:
+        print("Using simple credit integration...")
+        try:
+            # 设置PPO奖励函数（不执行SQL）
+            from algorithm.simple_credit_integration import setup_ppo_reward_function
+            setup_ppo_reward_function(
+                credit_model_path=args.credit_pretrain,
+                use_sql_execution=False,  # PPO阶段不执行SQL
+                enable_credit=args.enable_credit_shaping,
+                credit_weight=args.credit_weight,
+                credit_aggregation=args.credit_aggregation,
+                device="cuda"
+            )
+            
+            PPOTrainer = create_credit_enhanced_ppo_trainer(
+                base_trainer_class=PPOTrainer,
+                credit_model_actor_group=credit_model,
+                credit_weight=args.credit_weight,
+                enable_credit_shaping=args.enable_credit_shaping,
+                credit_aggregation=args.credit_aggregation
+            )
+            print("Simple credit integration successful")
+            print("PPO reward function configured: reward_model + credit_model (no SQL execution)")
+        except Exception as e:
+            print(f"Warning: Credit integration failed: {e}")
+            print("Continuing with standard PPO trainer")
+    else:
+        print("Using standard PPO trainer")
+
+    # 子句级别信用分配增强（如果启用）
+    if clause_integration is not None:
+        print("Enhancing PPO trainer with clause-level credit assignment...")
+        try:
+            # 使用子句级别信用分配增强训练器
+            PPOTrainer = clause_integration.enhance_ppo_trainer(PPOTrainer)
+            print("✓ PPO trainer enhanced with clause-level credit assignment")
+            print("✓ Supports real-time clause boundary detection")
+            print("✓ Supports discounted attribution for token rewards")
+        except Exception as e:
+            print(f"Warning: Failed to enhance PPO trainer with clause credit: {e}")
+            print("Continuing with previously configured trainer")
+
+    # 分离式奖励系统增强（如果启用）
+    separated_reward_integration = None
+    if hasattr(args, 'enable_separated_rewards') and args.enable_separated_rewards:
+        print("Enhancing PPO trainer with separated reward system...")
+        try:
+            from algorithm.separated_reward_system import SeparatedRewardPPOIntegration
+            from transformers import AutoTokenizer
+            
+            # 加载tokenizer（分离式奖励系统需要）
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(args.pretrain)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+            except Exception as e:
+                print(f"Warning: Failed to load tokenizer for separated rewards: {e}")
+                tokenizer = None
+            
+            if tokenizer is not None:
+                # 创建分离式奖励系统集成
+                separated_reward_integration = SeparatedRewardPPOIntegration(
+                    tokenizer=tokenizer,
+                    credit_model_path=args.credit_pretrain if args.credit_pretrain else "./ckpt/credit_model",
+                    discount_factor=args.clause_discount_factor if hasattr(args, 'clause_discount_factor') else 0.99,
+                    device="cuda"
+                )
+                
+                # 增强PPO训练器
+                PPOTrainer = separated_reward_integration.enhance_ppo_trainer(PPOTrainer)
+                print("✓ PPO trainer enhanced with separated reward system")
+                print("✓ Credit Model handles intermediate rewards (t=0,1,...,T-1)")
+                print("✓ Reward Model handles terminal rewards (t=T)")
+                print("✓ No temporal overlap between Credit and Reward models")
+            else:
+                print("Warning: Cannot create separated reward integration without tokenizer")
+            
+        except Exception as e:
+            print(f"Warning: Failed to enhance PPO trainer with separated rewards: {e}")
+            print("Continuing with previously configured trainer")
+
+    # 创建PPO专用的奖励函数
+    ppo_reward_fn = None
+    if credit_model is not None and args.credit_pretrain and args.enable_credit_shaping:
+        print("Creating PPO reward function with credit model integration...")
+        try:
+            from algorithm.ppo_reward import create_ppo_reward_wrapper
+            from algorithm.reward import reward_func as original_reward_func
+            
+            ppo_reward_fn = create_ppo_reward_wrapper(
+                original_reward_func=original_reward_func,
+                enable_credit=args.enable_credit_shaping,
+                credit_weight=args.credit_weight,
+                credit_aggregation=args.credit_aggregation
+            )
+            print("PPO reward function created successfully")
+        except Exception as e:
+            print(f"Warning: Failed to create PPO reward function: {e}")
+            ppo_reward_fn = None
+
+    # 集成AdaptiveEntropyProcessor
+    adaptive_entropy_config = None
+    if hasattr(args, 'enable_adaptive_entropy') and args.enable_adaptive_entropy:
+        print("Setting up AdaptiveEntropyProcessor for PPO training...")
+        try:
+            from algorithm.ppo_entropy_integration import create_ppo_generation_config_with_entropy
+            from transformers import AutoTokenizer
+            
+            # 加载tokenizer用于内容过滤
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(args.pretrain)
+                if tokenizer.pad_token is None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                print(f"Loaded tokenizer for entropy processing: {args.pretrain}")
+            except Exception as e:
+                print(f"Warning: Failed to load tokenizer for entropy processing: {e}")
+                tokenizer = None
+            
+            # 创建自适应熵生成配置
+            adaptive_entropy_config = create_ppo_generation_config_with_entropy(
+                tokenizer=tokenizer,
+                max_new_tokens=args.generate_max_len,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                low_entropy_threshold=getattr(args, 'low_entropy_threshold', 2.0),
+                high_entropy_threshold=getattr(args, 'high_entropy_threshold', 4.0),
+                low_k=getattr(args, 'low_k', 5),
+                high_k=getattr(args, 'high_k', 50),
+                enable_content_filtering=getattr(args, 'enable_content_filtering', True),
+                device="cuda"
+            )
+            print("AdaptiveEntropyProcessor configuration created successfully")
+            
+        except Exception as e:
+            print(f"Warning: Failed to setup AdaptiveEntropyProcessor: {e}")
+            adaptive_entropy_config = None
+
     # init PPO trainer (Single controller)
-    ppo_trainer = PPOTrainer.remote(
-        args.pretrain,
-        strategy,
-        actor_model,
-        critic_model,
-        reward_model,
-        ref_model,
-        vllm_engines,
-        prompt_split=args.prompt_split,
-        eval_split=args.eval_split,
+    trainer_kwargs = {
+        "pretrain": args.pretrain,
+        "strategy": strategy,
+        "actor": actor_model,
+        "critic": critic_model,
+        "reward_model": reward_model,
+        "ref_model": ref_model,
+        "vllm_engines": vllm_engines,
+        "prompt_split": args.prompt_split,
+        "eval_split": args.eval_split,
         # generate kwargs
-        do_sample=True,
-        prompt_max_len=args.prompt_max_len,
-        max_new_tokens=args.generate_max_len,
-        max_length=args.max_len,
-        temperature=args.temperature,
-        top_p=args.top_p,
-    )
+        "do_sample": True,
+        "prompt_max_len": args.prompt_max_len,
+        "max_new_tokens": args.generate_max_len,
+        "max_length": args.max_len,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+    }
+    
+    # 如果有自定义奖励函数，添加到kwargs中
+    if ppo_reward_fn is not None:
+        trainer_kwargs["reward_fn"] = ppo_reward_fn
+        print("Custom PPO reward function added to trainer")
+    
+    # 如果有AdaptiveEntropyProcessor配置，添加到trainer中
+    if adaptive_entropy_config is not None:
+        # 将自适应熵配置的生成参数覆盖到trainer_kwargs
+        for key, value in adaptive_entropy_config.items():
+            if key not in ['logits_processor']:  # logits_processor需要特殊处理
+                trainer_kwargs[key] = value
+        
+        # 添加logits_processor到生成配置中
+        if 'logits_processor' in adaptive_entropy_config:
+            trainer_kwargs['logits_processor'] = adaptive_entropy_config['logits_processor']
+        
+        print("AdaptiveEntropyProcessor integrated into PPO trainer")
+        print(f"Entropy thresholds: low={getattr(args, 'low_entropy_threshold', 2.0)}, high={getattr(args, 'high_entropy_threshold', 4.0)}")
+        print(f"K values: low={getattr(args, 'low_k', 5)}, high={getattr(args, 'high_k', 50)}")
+        print(f"Content filtering: {getattr(args, 'enable_content_filtering', True)}")
+    
+    # 创建PPO trainer实例
+    ppo_trainer = PPOTrainer.remote(**trainer_kwargs)
     # training update steps
     max_steps = ray.get(ppo_trainer.get_max_steps.remote())
 
@@ -167,6 +430,13 @@ def train(args):
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain, max_steps, vllm_engines))
     if not args.remote_rm_url:
         refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
+    
+    # Initialize credit model if available
+    if credit_model is not None:
+        refs.extend(credit_model.async_init_model_from_pretrained(
+            strategy, args.credit_pretrain, args.credit_num_outputs
+        ))
+    
     ray.get(refs)
 
     if args.critic_pretrain:
@@ -244,6 +514,9 @@ if __name__ == "__main__":
         default=0.95,
         help="vLLM gpu_memory_utilization",
     )
+    # Your Efficient RL Framework Secretly Brings You Off-Policy RL Training: https://fengyao.notion.site/off-policy-rl
+    parser.add_argument("--enable_vllm_is_correction", action="store_true", default=False)
+    parser.add_argument("--vllm_is_truncated_threshold", type=float, default=2)
 
     # Async training using ray
     parser.add_argument("--async_train", action="store_true", default=False, help="Enable async training")
@@ -274,7 +547,12 @@ if __name__ == "__main__":
     parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
     parser.add_argument("--adam_offload", action="store_true", default=False, help="Offload Adam Optimizer")
     parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
-    parser.add_argument("--flash_attn", action="store_true", default=False, help="Enable FlashAttention2")
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="flash_attention_2",
+        help="Attention implementation (e.g., eager, flash_attention_2, flash_attention_3, kernels-community/vllm-flash-attn3)",
+    )
     parser.add_argument("--use_liger_kernel", action="store_true", default=False, help="Enable Liger Kernel")
     parser.add_argument("--grad_accum_dtype", type=str, default=None, help="Adam grad accum data type")
     parser.add_argument("--overlap_comm", action="store_true", default=False)
@@ -290,6 +568,11 @@ if __name__ == "__main__":
 
     # packing samples using Flash Attention2
     parser.add_argument("--packing_samples", action="store_true", default=False)
+
+    # dynamic batch size
+    parser.add_argument("--use_dynamic_batch", action="store_true", default=False)
+    parser.add_argument("--rollout_max_tokens_per_gpu", type=int, default=None)
+    parser.add_argument("--train_max_tokens_per_gpu", type=int, default=16192)
 
     # LoRA
     parser.add_argument("--load_in_4bit", action="store_true", default=False)
@@ -316,6 +599,7 @@ if __name__ == "__main__":
     parser.add_argument("--ptx_coef", type=float, default=0.05, help="PPO-ptx loss coef")
     parser.add_argument("--eps_clip", type=float, default=0.2, help="PPO clip range")
     parser.add_argument("--eps_clip_low_high", type=float, nargs=2, default=None, help="PPO-clip low and high")
+    parser.add_argument("--dual_clip", type=float, default=None, help="Dual-clip PPO")
     parser.add_argument("--value_clip", type=float, default=0.5, help="PPO value clip range")
     parser.add_argument("--lambd", type=float, default=1, help="PPO GAE lambd")
     parser.add_argument("--gamma", type=float, default=1, help="PPO GAE gamma")
@@ -343,6 +627,7 @@ if __name__ == "__main__":
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--kl_horizon", type=int, default=10000)
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
+    parser.add_argument("--policy_loss_type", type=str, default="ppo", choices=["ppo", "gspo"])
     parser.add_argument(
         "--kl_estimator",
         type=str,
@@ -377,6 +662,10 @@ if __name__ == "__main__":
         default=False,
         help="disable dividing by std for advantages while keeping mean normalization",
     )
+    parser.add_argument(
+        "--overlong_buffer_len", type=float, default=None, help="reward with optional overlong penalty"
+    )
+    parser.add_argument("--overlong_penalty_factor", type=float, default=1, help="overlong penalty factor")
 
     # Context Parallel
     parser.add_argument("--ring_attn_size", type=int, default=1, help="Ring attention group size")
@@ -388,7 +677,16 @@ if __name__ == "__main__":
         "It should be a divisor of the number of heads. "
         "A larger value may results in faster training but will consume more memory.",
     )
-
+    # Credit Model parameters
+    parser.add_argument("--credit_pretrain", type=str, default=None, help="Credit Model path")
+    parser.add_argument("--credit_num_nodes", type=int, default=1, help="number of nodes for credit model")
+    parser.add_argument("--credit_num_gpus_per_node", type=int, default=1, help="number of gpus per node for credit model")
+    parser.add_argument("--credit_num_outputs", type=int, default=8, help="number of output dimensions for credit model")
+    parser.add_argument("--credit_weight", type=float, default=0.1, help="weight for credit-based reward adjustment")
+    parser.add_argument("--enable_credit_shaping", action="store_true", default=False, help="enable credit-based reward shaping")
+    parser.add_argument("--credit_aggregation", type=str, default="weighted_sum", 
+                        choices=["weighted_sum", "max", "mean"], help="method to aggregate credit scores")
+    parser.add_argument("--credit_agent_func_path", type=str, default=None, help="Credit Agent script path")
     #  Models
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")
     parser.add_argument("--reward_pretrain", type=str, default=None, help="HF model name or path")
@@ -447,11 +745,48 @@ if __name__ == "__main__":
     # ModelScope parameters
     parser.add_argument("--use_ms", action="store_true", default=False)
 
+    # AdaptiveEntropyProcessor parameters
+    parser.add_argument("--enable_adaptive_entropy", action="store_true", default=False, 
+                       help="Enable AdaptiveEntropyProcessor for dynamic exploration/exploitation balance")
+    parser.add_argument("--low_entropy_threshold", type=float, default=2.0,
+                       help="Entropy threshold below which to use low k-value (confident predictions)")
+    parser.add_argument("--high_entropy_threshold", type=float, default=4.0,
+                       help="Entropy threshold above which to use high k-value (uncertain predictions)")
+    parser.add_argument("--low_k", type=int, default=5,
+                       help="Top-K value for low entropy (confident) predictions")
+    parser.add_argument("--high_k", type=int, default=50,
+                       help="Top-K value for high entropy (uncertain) predictions")
+    parser.add_argument("--enable_content_filtering", action="store_true", default=True,
+                       help="Enable content filtering to distinguish SQL generation from thinking processes")
+
+    # Clause-level Credit Assignment parameters
+    parser.add_argument("--enable_clause_credit", action="store_true", default=False,
+                       help="Enable clause-level credit assignment for fine-grained token rewards")
+    parser.add_argument("--clause_discount_factor", type=float, default=0.99,
+                       help="Discount factor for clause-level credit attribution (gamma)")
+    parser.add_argument("--clause_credit_weight", type=float, default=0.1,
+                       help="Weight for clause-level credit in the overall reward calculation")
+
+    # Separated Reward System parameters
+    parser.add_argument("--enable_separated_rewards", action="store_true", default=False,
+                       help="Enable separated reward system where Credit Model handles intermediate rewards and Reward Model handles terminal rewards")
+
     args = parser.parse_args()
 
     # Validate arguments
     if args.eps_clip_low_high is None:
         args.eps_clip_low_high = (args.eps_clip, args.eps_clip)
+
+    # Validate mutually exclusive reward systems
+    if hasattr(args, 'enable_clause_credit') and hasattr(args, 'enable_separated_rewards'):
+        if args.enable_clause_credit and args.enable_separated_rewards:
+            raise ValueError(
+                "Cannot enable both clause-level credit assignment (--enable_clause_credit) "
+                "and separated reward system (--enable_separated_rewards) simultaneously. "
+                "These are mutually exclusive approaches:\n"
+                "- Clause-level credit: Credit Model and Reward Model work simultaneously\n"
+                "- Separated rewards: Credit Model and Reward Model work at different time phases"
+            )
 
     if args.agent_func_path:
         args.remote_rm_url = "agent"
@@ -485,10 +820,20 @@ if __name__ == "__main__":
             print("[Warning] --ring_attn_size > 1 requires --packing_samples.")
             args.packing_samples = True
 
+    if args.use_dynamic_batch:
+        if not args.packing_samples:
+            print("[Warning] Please --packing_samples to accelerate when --use_dynamic_batch is enabled.")
+            args.packing_samples = True
+        if args.rollout_max_tokens_per_gpu is None:
+            print("[Warning] Set --rollout_max_tokens_per_gpu to --train_max_tokens_per_gpu.")
+            args.rollout_max_tokens_per_gpu = args.train_max_tokens_per_gpu
+
     if args.packing_samples:
-        if not args.flash_attn:
-            print("[Warning] Please --flash_attn to accelerate when --packing_samples is enabled.")
-            args.flash_attn = True
+        if "flash_attention" not in args.attn_implementation:
+            print(
+                "[Warning] Please use --attn_implementation with flash_attention to accelerate when --packing_samples is enabled."
+            )
+            args.attn_implementation = "flash_attention_2"
         assert args.vllm_num_engines > 0, "Only support `--packing_samples` with vLLM."
 
     if args.vllm_enable_sleep and not args.colocate_all_models:

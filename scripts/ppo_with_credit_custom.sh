@@ -1,0 +1,139 @@
+#!/bin/bash
+
+# PPO训练脚本 - 自定义数据版本
+# 集成Credit Model进行细粒度的信用分配
+# 使用Ray进行分布式训练
+
+# 设置基本路径
+BASE_DIR="/home/banlujie/RL-NL2SQL"
+ACTOR_MODEL_PATH="${BASE_DIR}/ckpt/phi4_mini_reasoning"
+REWARD_MODEL_PATH="${BASE_DIR}/ckpt/phi4-7b-rm"
+CREDIT_MODEL_PATH="${BASE_DIR}/ckpt/phi4-7b-cm"
+SAVE_PATH="${BASE_DIR}/ckpt/phi4-7b-ppo-credit"
+# 自定义你的prompt数据路径
+PROMPT_DATA_PATH="/home/banlujie/data/bird_train/train/sft/train_sft.json"
+EVAL_DATASET="/home/banlujie/data/bird_train/train/sft/eval_sft.json"
+# 检查所有必要的模型和数据是否存在
+if [ ! -d "$CREDIT_MODEL_PATH" ]; then
+    echo "Error: Credit Model not found at $CREDIT_MODEL_PATH"
+    exit 1
+fi
+
+if [ ! -f "$PROMPT_DATA_PATH" ]; then
+    echo "Warning: Prompt data not found at $PROMPT_DATA_PATH"
+    echo "Using default OpenRLHF prompt collection instead"
+    PROMPT_DATA_PATH="OpenRLHF/prompt-collection-v0.1"
+    INPUT_KEY="context_messages"
+    APPLY_CHAT_TEMPLATE="--apply_chat_template"
+else
+    INPUT_KEY="prompt"  # 根据你的数据格式调整
+    APPLY_CHAT_TEMPLATE="--apply_chat_template"
+fi
+
+# GPU配置 - 可以修改这里来指定使用哪些GPU
+# 例如: "0,1,2,3" 使用前4块GPU, "2,3,4,5" 使用GPU 2-5
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3,4,5"}
+NUM_GPUS=${NUM_GPUS:-6}
+
+echo "Starting PPO training with Credit Model integration using Ray..."
+echo "Actor Model: $ACTOR_MODEL_PATH"
+echo "Reward Model: $REWARD_MODEL_PATH"
+echo "Credit Model: $CREDIT_MODEL_PATH"
+echo "Prompt Data: $PROMPT_DATA_PATH"
+echo "Save Path: $SAVE_PATH"
+echo "Using GPUs: $CUDA_VISIBLE_DEVICES"
+
+# 启动Ray集群，使用指定的GPU
+export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
+
+# 设置代理服务器用于wandb
+export http_proxy=http://127.0.0.1:7890
+export https_proxy=http://127.0.0.1:7890
+
+
+echo "Proxy settings:"
+echo "HTTP_PROXY: $http_proxy"
+echo "HTTPS_PROXY: $https_proxy"
+
+ray start --head --node-ip-address 0.0.0.0 --num-gpus $NUM_GPUS --num-cpus 16
+
+# 创建运行时环境配置，排除大文件并包含代理设置
+RUNTIME_ENV='{
+  "working_dir": "/home/banlujie/RL-NL2SQL",
+  "env_vars": {
+    "http_proxy": "http://127.0.0.1:7890",
+    "https_proxy": "http://127.0.0.1:7890"
+  },
+  "excludes": [
+    ".git/**",
+    "wandb/**", 
+    "ckpt/**/*.safetensors",
+    "ckpt/**/tokenizer.json",
+    "*.log",
+    "**/*.wandb",
+    "__pycache__/**",
+    "*.pyc",
+    ".venv/**"
+  ]
+}'
+
+# 使用Ray进行PPO训练，集成Credit Model
+# ray job submit --address="http://127.0.0.1:8265" \
+#    --runtime-env-json="$RUNTIME_ENV" \
+python3 train_ppo_ray.py \
+   --ref_num_nodes 1 \
+   --ref_num_gpus_per_node 1 \
+   --reward_num_nodes 1 \
+   --reward_num_gpus_per_node 1 \
+   --critic_num_nodes 1 \
+   --critic_num_gpus_per_node 1 \
+   --actor_num_nodes 1 \
+   --actor_num_gpus_per_node 1 \
+   --credit_num_nodes 1 \
+   --credit_num_gpus_per_node 1 \
+   --colocate_critic_reward \
+   --colocate_actor_ref \
+   --vllm_num_engines 1 \
+   --vllm_tensor_parallel_size 1 \
+   --vllm_gpu_memory_utilization 0.6 \
+   --pretrain $ACTOR_MODEL_PATH \
+   --reward_pretrain $REWARD_MODEL_PATH \
+   --credit_pretrain $CREDIT_MODEL_PATH \
+   --save_path $SAVE_PATH \
+   --micro_train_batch_size 8 \
+   --train_batch_size 64 \
+   --micro_rollout_batch_size 16 \
+   --rollout_batch_size 512 \
+   --max_samples 50000 \
+   --max_epochs 1 \
+   --prompt_max_len 1024 \
+   --generate_max_len 1024 \
+   --zero_stage 3 \
+   --bf16 \
+   --actor_learning_rate 5e-7 \
+   --critic_learning_rate 9e-6 \
+   --init_kl_coef 0.01 \
+   --prompt_data $PROMPT_DATA_PATH \
+   --input_key $INPUT_KEY \
+   $APPLY_CHAT_TEMPLATE \
+   --packing_samples \
+   --normalize_reward \
+   --adam_offload \
+   --attn_implementation flash_attention_2 \
+   --gradient_checkpointing \
+   --save_steps 500 \
+   --logging_steps 10 \
+   --eval_steps 500 \
+   --use_wandb 5c00be123cfc09b2a58a5d1071ffbfba53cd88d3 \
+   --wandb_project "RL-NL2SQL-PPO-Credit" \
+   --wandb_run_name "ppo_with_credit_$(date +%m%d_%H%M)" \
+   --credit_num_outputs 8 \
+   --credit_weight 0.1 \
+   --enable_credit_shaping \
+   --credit_aggregation "weighted_sum"\
+   --vllm_sync_backend nccl \
+   --use_dynamic_batch \
+   --rollout_max_tokens_per_gpu 16384 \
+   --train_max_tokens_per_gpu 16384\
+
+echo "PPO training with Credit Model completed!"

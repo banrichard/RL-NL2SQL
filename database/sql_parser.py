@@ -3,8 +3,8 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import build_scope
 from typing import List, Dict, Tuple, Any
 from collections import defaultdict
-from schema import DatabaseSchema
-from db_manager import DatabaseManager
+from database.schema import DatabaseSchema
+from database.db_manager import DatabaseManager
 
 
 def get_schema_dict_for_sqlglot(database_schema: DatabaseSchema):
