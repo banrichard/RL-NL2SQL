@@ -2,12 +2,8 @@ from typing import Dict, List, Tuple
 from threading import Lock
 from collections import defaultdict
 
-try:
-    from .schema import DatabaseSchema
-    from .db_utils import load_database_schema_dict, build_table_ddl_statement
-except ImportError:
-    from database.schema import DatabaseSchema
-    from database.db_utils import load_database_schema_dict, build_table_ddl_statement
+from schema import DatabaseSchema
+from db_utils import load_database_schema_dict, build_table_ddl_statement
 
 
 class DatabaseManager:

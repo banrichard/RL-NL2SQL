@@ -200,7 +200,13 @@ def create_ppo_generation_config_with_entropy(
     low_k: int = 5,
     high_k: int = 50,
     enable_content_filtering: bool = True,
-    device: str = "cuda"
+    device: str = "cuda",
+    # Dynamic K arguments
+    use_dynamic_k: bool = False,
+    k_min: int = 5,
+    k_max: int = 50,
+    sigmoid_weight: float = 1.0,
+    entropy_center: float = 3.0
 ) -> Dict[str, Any]:
     """
     创建包含自适应熵处理器的PPO生成配置
@@ -216,6 +222,11 @@ def create_ppo_generation_config_with_entropy(
         high_k: 探索策略的k值
         enable_content_filtering: 是否启用内容过滤
         device: 计算设备
+        use_dynamic_k: 是否使用动态k值
+        k_min: 动态k值的下限
+        k_max: 动态k值的上限
+        sigmoid_weight: 动态k值sigmoid函数的权重
+        entropy_center: 动态k值sigmoid函数的中心
         
     Returns:
         完整的生成配置字典
@@ -228,7 +239,12 @@ def create_ppo_generation_config_with_entropy(
         high_k=high_k,
         enable_content_filtering=enable_content_filtering,
         tokenizer=tokenizer,
-        device=device
+        device=device,
+        use_dynamic_k=use_dynamic_k,
+        k_min=k_min,
+        k_max=k_max,
+        sigmoid_weight=sigmoid_weight,
+        entropy_center=entropy_center
     )
     
     # 创建logits processor列表

@@ -114,14 +114,6 @@ class CreditModel(nn.Module):
 
         # 初始化新頭部的權重
         self.regression_head.weight.data.normal_(mean=0.0, std=1 / (hidden_size + 1))
-        
-        # 確保回歸頭與主模型使用相同的數據類型
-        if bf16:
-            self.regression_head = self.regression_head.to(torch.bfloat16)
-        
-        # 如果使用LoRA，也要確保回歸頭的數據類型一致
-        if lora_rank > 0 and load_in_4bit:
-            self.regression_head = self.regression_head.to(torch.bfloat16)
 
     @property
     def config(self):
@@ -181,21 +173,20 @@ class CreditModel(nn.Module):
         import os
         import json
         
-        # 尝试加载元信息
-        meta_path = os.path.join(model_path, "credit_model_meta.json")
-        if os.path.exists(meta_path):
-            with open(meta_path, 'r') as f:
-                meta_info = json.load(f)
-            num_outputs = meta_info.get("num_outputs", kwargs.get("num_outputs", 8))
+        # 确定num_outputs
+        if "num_outputs" in kwargs:
+            num_outputs = kwargs.pop("num_outputs")
         else:
-            num_outputs = kwargs.get("num_outputs", 8)
-        
-        # 从kwargs中移除num_outputs，避免重复传递
-        model_kwargs = kwargs.copy()
-        model_kwargs.pop("num_outputs", None)
+            meta_path = os.path.join(model_path, "credit_model_meta.json")
+            if os.path.exists(meta_path):
+                with open(meta_path, "r") as f:
+                    meta_info = json.load(f)
+                num_outputs = meta_info.get("num_outputs", 8)
+            else:
+                num_outputs = 8
         
         # 创建模型实例
-        model = cls(model_path, num_outputs=num_outputs, **model_kwargs)
+        model = cls(model_path, num_outputs=num_outputs, **kwargs)
         
         # 尝试加载回归头的权重
         regression_head_path = os.path.join(model_path, "regression_head.bin")
@@ -231,16 +222,10 @@ class CreditModel(nn.Module):
         # 我們需要找到每個序列中最後一個 non-padding token 的位置
         if attention_mask is not None:
             last_token_indices = attention_mask.sum(dim=1) - 1
-            # 确保索引是long类型
-            last_token_indices = last_token_indices.long()
             sequence_representation = last_hidden_state[torch.arange(last_hidden_state.size(0)), last_token_indices]
         else:
             # 如果沒有 attention_mask，則假設沒有 padding，取最後一個
             sequence_representation = last_hidden_state[:, -1, :]
-
-        # 確保數據類型一致性
-        if sequence_representation.dtype != self.regression_head.weight.dtype:
-            sequence_representation = sequence_representation.to(self.regression_head.weight.dtype)
 
         # 將序列的表徵傳入迴歸頭，得到預測的信用分數
         predicted_credits = self.regression_head(sequence_representation)

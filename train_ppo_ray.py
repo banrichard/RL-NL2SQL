@@ -39,7 +39,7 @@ def train(args):
             ), f"num_nodes and num_gpus_per_node must be the same when colocate actor and ref model."
 
         bundles = [{"GPU": 1, "CPU": 1} for _ in range(args.actor_num_nodes * args.actor_num_gpus_per_node)]
-        pg = placement_group(bundles, strategy="PACK")
+        pg = placement_group(bundles, strategy="STRICT_PACK")
         ray.get(pg.ready())
 
     # init vLLM engine for text generation
@@ -369,7 +369,12 @@ def train(args):
                 low_k=getattr(args, 'low_k', 5),
                 high_k=getattr(args, 'high_k', 50),
                 enable_content_filtering=getattr(args, 'enable_content_filtering', True),
-                device="cuda"
+                device="cuda",
+                use_dynamic_k=getattr(args, 'use_dynamic_k', False),
+                k_min=getattr(args, 'k_min', 5),
+                k_max=getattr(args, 'k_max', 50),
+                sigmoid_weight=getattr(args, 'sigmoid_weight', 1.0),
+                entropy_center=getattr(args, 'entropy_center', 3.0)
             )
             print("AdaptiveEntropyProcessor configuration created successfully")
             
@@ -381,10 +386,10 @@ def train(args):
     trainer_kwargs = {
         "pretrain": args.pretrain,
         "strategy": strategy,
-        "actor": actor_model,
-        "critic": critic_model,
-        "reward_model": reward_model,
-        "ref_model": ref_model,
+        "actor_model_group": actor_model,
+        "critic_model_group": critic_model,
+        "reward_model_group": reward_model,
+        "reference_model_group": ref_model,
         "vllm_engines": vllm_engines,
         "prompt_split": args.prompt_split,
         "eval_split": args.eval_split,
@@ -770,6 +775,15 @@ if __name__ == "__main__":
     # Separated Reward System parameters
     parser.add_argument("--enable_separated_rewards", action="store_true", default=False,
                        help="Enable separated reward system where Credit Model handles intermediate rewards and Reward Model handles terminal rewards")
+
+    # Dynamic Entropy and Top-K parameters (for backward compatibility)
+    parser.add_argument("--entropy_threshold", type=float, default=2.0, help="Entropy threshold for adaptive sampling")
+    parser.add_argument("--use_dynamic_k", action="store_true", default=False, help="Enable dynamic k-value for Top-K sampling")
+    parser.add_argument("--k_min", type=int, default=5, help="Minimum k value for dynamic Top-K sampling")
+    parser.add_argument("--k_max", type=int, default=50, help="Maximum k value for dynamic Top-K sampling")
+    parser.add_argument("--sigmoid_weight", type=float, default=1.0, help="Weight for sigmoid function in dynamic k calculation")
+    parser.add_argument("--entropy_center", type=float, default=2.5, help="Center point for entropy-based sigmoid function")
+    parser.add_argument("--smooth_threshold", type=float, default=0.1, help="Smooth threshold for entropy processor")
 
     args = parser.parse_args()
 

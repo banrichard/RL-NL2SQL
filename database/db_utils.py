@@ -4,10 +4,7 @@ import chardet
 import pandas as pd
 from loguru import logger
 
-try:
-    from .sql_executor import execute_sql_without_timeout
-except ImportError:
-    from database.sql_executor import execute_sql_without_timeout
+from sql_executor import execute_sql_without_timeout
 
 
 def lower_str_list(str_list: List[Any]) -> List[Any]:
