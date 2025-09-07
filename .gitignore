@@ -146,3 +146,7 @@ tmp/
 experiments/
 results/
 outputs/
+eval_results_phi4_mini.json
+eval_results_phi4_mini_sft.json
+.gitignore
+eval_results_qwen2.5_7b_instruct.json

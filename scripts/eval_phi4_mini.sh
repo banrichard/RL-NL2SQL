@@ -10,10 +10,11 @@ python eval_vllm.py \
     --dev_path "/home/banlujie/data/bird_dev/dev.json" \
     --tables_path "/home/banlujie/data/bird_dev/dev_tables.json" \
     --db_root_path "/home/banlujie/data/bird_dev/dev_databases" \
-    --template_path "/home/banlujie/RL-NL2SQL/templates/sql_generation.txt" \
+    --template_path "/home/banlujie/RL-NL2SQL/templates/sql_generation_qwen.txt" \
+    --system_prompt_path "/home/banlujie/RL-NL2SQL/templates/system_prompt_sql_expert.txt" \
     --output_path "/home/banlujie/RL-NL2SQL/eval_results_phi4_mini.json" \
     --temperature 0.0 \
-    --max_tokens 4096 \
+    --max_tokens 8192 \
     --timeout 10
 
 echo "=== 评估完成 ==="

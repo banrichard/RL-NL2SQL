@@ -23,19 +23,25 @@ def extract_sql_from_output(output_text):
     从模型输出中提取 SQL 查询
     支持多种格式的 SQL 代码块
     """
-    # 尝试匹配 <answer>```sql ... ``` </answer> 格式
+    # 1. 优先提取 Qwen XML 格式的 <sql> 标签
+    xml_sql_pattern = r'<sql>\s*(.*?)\s*</sql>'
+    match = re.search(xml_sql_pattern, output_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    
+    # 2. 尝试匹配 <answer>```sql ... ``` </answer> 格式
     answer_pattern = r'<answer>\s*```sql\s*(.*?)\s*```\s*</answer>'
     match = re.search(answer_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     
-    # 尝试匹配普通的 ```sql ... ``` 格式
+    # 3. 尝试匹配普通的 ```sql ... ``` 格式
     sql_pattern = r'```sql\s*(.*?)\s*```'
     match = re.search(sql_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     
-    # 尝试匹配 ``` ... ``` 格式（无 sql 标识）
+    # 4. 尝试匹配 ``` ... ``` 格式（无 sql 标识）
     code_pattern = r'```\s*(.*?)\s*```'
     match = re.search(code_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
@@ -43,7 +49,40 @@ def extract_sql_from_output(output_text):
         # 简单检查是否像 SQL（包含 SELECT、INSERT、UPDATE、DELETE 等关键词）
         if any(keyword in sql_candidate.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE']):
             return sql_candidate
+
+    # 5. 直接提取首个 SQL 语句 - 改进版本
+    # 匹配从 SELECT/INSERT/UPDATE/DELETE 开始到分号或行末的完整语句
+    sql_line_pattern = r'((?:SELECT|INSERT|UPDATE|DELETE)(?:[^;])+(?:;|$))'
+    match = re.search(sql_line_pattern, output_text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        sql_candidate = match.group(1).strip()
+        # 确保不是只有一个关键词
+        if len(sql_candidate.split()) > 1:
+            return sql_candidate
     
+    # 6. 更宽松的匹配 - 匹配多行 SQL
+    multiline_sql_pattern = r'((?:SELECT|INSERT|UPDATE|DELETE)(?:.|\n)*?)(?:\n\s*\n|\n\s*$|$)'
+    match = re.search(multiline_sql_pattern, output_text, re.IGNORECASE)
+    if match:
+        sql_candidate = match.group(1).strip()
+        # 确保有基本的 SQL 结构
+        if len(sql_candidate.split()) > 2 and ('FROM' in sql_candidate.upper() or 'INTO' in sql_candidate.upper()):
+            return sql_candidate
+
+    # 7. 按行查找最长的 SQL 语句
+    longest_sql = None
+    max_length = 0
+    for line in output_text.splitlines():
+        line = line.strip()
+        if line.upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE')):
+            if len(line) > max_length:
+                longest_sql = line
+                max_length = len(line)
+    
+    if longest_sql and len(longest_sql.split()) > 2:
+        return longest_sql
+    
+    return None
     return None
 
 
@@ -106,12 +145,34 @@ def load_data(dev_path, tables_path):
     return dev_data, schema_map
 
 
-def prepare_prompts(dev_data, schema_map, template_path, tokenizer):
+def prepare_prompts(dev_data, schema_map, template_path, tokenizer, system_prompt_path=None):
     """
     准备所有的推理 prompts
     """
     with open(template_path, 'r', encoding='utf-8') as f:
         template = f.read()
+    
+    # 加载自定义 system prompt 或使用默认的
+    if system_prompt_path and os.path.exists(system_prompt_path):
+        with open(system_prompt_path, 'r', encoding='utf-8') as f:
+            system_prompt = f.read().strip()
+        print(f"使用自定义 system prompt: {system_prompt_path}")
+    else:
+        # 默认 system prompt
+        system_prompt = """You are an expert SQL developer with deep knowledge of database design and query optimization. 
+Your task is to generate accurate, efficient SQL queries based on natural language questions and database schemas.
+
+Key guidelines:
+1. Always analyze the database schema carefully before writing queries
+2. Use proper JOIN conditions and avoid Cartesian products
+3. Handle NULL values appropriately
+4. Use SQLite-compatible syntax only
+5. Ensure the query answers exactly what is asked, no more, no less
+6. Follow the XML output format strictly: <sql>your_query_here</sql>
+7. Think step by step and show your reasoning in <think> tags
+
+Remember: Accuracy is paramount. Double-check your column names, table relationships, and logic."""
+        print("使用默认 system prompt")
     
     tasks = []
     for item in dev_data:
@@ -122,16 +183,19 @@ def prepare_prompts(dev_data, schema_map, template_path, tokenizer):
         
         schema_str = serialize_schema(schema_map[db_id])
         evidence = item.get('evidence', '')
-        question = item['question'] + (" " + evidence if evidence else "")
+        question = item['question']
         
         prompt_text = template.format(
-            db_engine="SQLite",
-            db_id=db_id,
-            db_details=schema_str,
-            question=question
+            SCHEMA_CONTEXT=schema_str,
+            QUESTION=question,
+            HINT=evidence
         )
         
-        messages = [{"role": "user", "content": prompt_text}]
+        # 使用 system + user 消息结构
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_text}
+        ]
         final_prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
@@ -158,6 +222,8 @@ def main():
                         help="数据库文件根目录")
     parser.add_argument("--template_path", type=str, default="/home/banlujie/RL-NL2SQL/templates/sql_generation.txt",
                         help="prompt 模板路径")
+    parser.add_argument("--system_prompt_path", type=str, default=None,
+                        help="自定义 system prompt 文件路径（可选）")
     parser.add_argument("--output_path", type=str, default="/home/banlujie/RL-NL2SQL/eval_results.json",
                         help="评估结果输出路径")
     parser.add_argument("--temperature", type=float, default=0.0,
@@ -175,9 +241,14 @@ def main():
     print(f"数据库路径: {args.db_root_path}")
     
     # 检查路径是否存在
-    if not os.path.exists(args.model_path):
+    # 如果模型路径包含 "/"，可能是 Hugging Face 模型 ID，不需要检查本地存在性
+    if "/" not in args.model_path and not os.path.exists(args.model_path):
         print(f"错误：模型路径不存在 - {args.model_path}")
         return
+    elif "/" in args.model_path:
+        print(f"使用 Hugging Face 模型: {args.model_path}")
+    else:
+        print(f"使用本地模型: {args.model_path}")
     
     if not os.path.exists(args.dev_path):
         print(f"错误：开发集路径不存在 - {args.dev_path}")
@@ -200,21 +271,43 @@ def main():
     
     # 准备 prompts
     print("正在准备 prompts...")
-    tasks = prepare_prompts(dev_data, schema_map, args.template_path, tokenizer)
+    tasks = prepare_prompts(dev_data, schema_map, args.template_path, tokenizer, args.system_prompt_path)
     print(f"准备了 {len(tasks)} 个推理任务")
     
     # 设置生成参数
     sampling_params = SamplingParams(
         temperature=args.temperature,
         top_p=0.95,
-        max_tokens=args.max_tokens,
-        stop=["```", "</answer>"]
+        max_tokens=args.max_tokens
+        # 移除 stop tokens，让模型自然完成生成
     )
     
-    # 批量推理
-    print("正在进行批量推理...")
-    all_prompts = [task['prompt'] for task in tasks]
-    outputs = llm.generate(all_prompts, sampling_params)
+    # 分批推理，每批500个样本
+    print("正在进行分批推理...")
+    batch_size = 500
+    all_outputs = []
+    
+    for batch_start in range(0, len(tasks), batch_size):
+        batch_end = min(batch_start + batch_size, len(tasks))
+        batch_prompts = [tasks[i]['prompt'] for i in range(batch_start, batch_end)]
+        
+        print(f"正在处理第 {batch_start + 1} - {batch_end} 个样本...")
+        batch_outputs = llm.generate(batch_prompts, sampling_params)
+        all_outputs.extend(batch_outputs)
+        
+        # 打印当前批次的一些生成内容
+        print(f"\n{'='*60}")
+        print(f"第 {batch_end} 个样本的生成内容:")
+        if batch_outputs:
+            sample_idx = batch_start + len(batch_outputs) - 1
+            sample_task = tasks[sample_idx]
+            sample_output = batch_outputs[-1]
+            print(f"问题: {sample_task['original_item']['question']}")
+            print(f"数据库: {sample_task['original_item']['db_id']}")
+            print(f"生成内容: {sample_output.outputs[0].text}")
+        print(f"{'='*60}\n")
+    
+    outputs = all_outputs
     print("推理完成！")
     
     # 评估结果

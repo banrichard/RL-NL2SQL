@@ -26,5 +26,3 @@ In your answer, please enclose the generated SQL query in a code block:
 -- Your SQL query
 ```
 <\answer>
-User: {question}
-Assistant:

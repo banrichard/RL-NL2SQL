@@ -1,0 +1,12 @@
+【Table creation statements】
+{SCHEMA_CONTEXT}
+
+**************************
+【Question】
+Question: 
+{QUESTION}
+
+Hint:
+{HINT}
+
+**************************
