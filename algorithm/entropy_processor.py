@@ -76,7 +76,7 @@ class AdaptiveEntropyLogitsProcessor(LogitsProcessor):
         self.device = device
         
         # SQL生成触发词
-        self.sql_generation_trigger = "<answer>```sql"
+        self.sql_generation_trigger = "```sql"
         
         # 内容过滤模式
         self.thinking_patterns = [

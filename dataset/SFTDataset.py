@@ -7,7 +7,7 @@ from openrlhf.utils.utils import zero_pad_sequences
 
 
 def preprocess_data(
-    data, input_template=None, input_key=["input","question","evidence"], output_key=None, apply_chat_template=None, multiturn=False
+    data, system_template=None, input_key=["input","question","evidence"], output_key=None, apply_chat_template=None, multiturn=False
 ):
     if apply_chat_template:
         if output_key:
@@ -15,7 +15,7 @@ def preprocess_data(
             response_message = data[output_key]
 
             if isinstance(prompt_message, str) and isinstance(response_message, str):
-                prompt_message = [{"role": "user", "content": prompt_message}]
+                prompt_message = [{"role": "user", "content": prompt_message},{"role":"system","content":system_template}]
                 response_message = [{"role": "assistant", "content": response_message}]
 
             prompt = apply_chat_template(prompt_message, tokenize=False, add_generation_prompt=True)
@@ -232,4 +232,4 @@ if __name__ == "__main__":
     # Example usage
     from transformers import AutoTokenizer
     dataset = load_dataset("json",data_files="/home/banlujie/data/bird_train/train/train_clean.json", split="train")
-    sft_dataset = SFTDataset(dataset, AutoTokenizer.from_pretrained("gpt2"), 512, None, multiturn=True)
+    sft_dataset = SFTDataset(dataset, AutoTokenizer.from_pretrained("Qwen/Qwen2.5-Coder-7B-Instruct"), 512, None, multiturn=False)

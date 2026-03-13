@@ -46,13 +46,10 @@ Database admin instructions (voliating any of the following will result is punis
 
 Repeating the question and hint, and generating the SQL with Recursive Divide-and-Conquer, and finally try to simplify the SQL query using `INNER JOIN` over nested `SELECT` statements IF POSSIBLE.
 
-Please respond with xml tags structured as follows:
-```xml
-<think>
-Your detailed reasoning for the SQL query generation, with Recursive Divide-and-Conquer approach.
-</think>
-<sql>
-The final SQL query that answers the question.
-</sql>
+Output Format:
+In your answer, please enclose the generated SQL query in a code block:
+```sql
+-- Your SQL query
 ```
-Only output xml format (starting with ```xml and ending with ```) as your response.
+
+Take a deep breath and think step by step to find the correct SQL query.

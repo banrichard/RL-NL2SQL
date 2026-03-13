@@ -22,7 +22,9 @@ Instructions:
 
 Output Format:
 In your answer, please enclose the generated SQL query in a code block:
-<answer>```sql
+```sql
 -- Your SQL query
 ```
-<\answer>
+
+
+Take a deep breath and think step by step to find the correct SQL query.

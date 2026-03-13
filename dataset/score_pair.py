@@ -117,13 +117,13 @@ def main():
     """
     # --- 設定 ---
     # !! 請根據您的環境修改這些路徑 !!
-    CANDIDATES_PATH = "/home/banlujie/data/bird_train/train/reward_candidates_clean.jsonl"
-    DB_ROOT_PATH = "/home/banlujie/data/bird_train/train/train_databases"
-    FINAL_PAIRED_PATH = "/home/banlujie/data/bird_train/train/reward_train_dataset_new.jsonl"
-    STUCK_LOG_PATH = "/home/banlujie/data/bird_train/train/stuck_tasks_clean.log"
+    CANDIDATES_PATH = "/home/banlujie/data/synsql_5k/reward/reward_candidates_clean.jsonl"
+    DB_ROOT_PATH = "/home/banlujie/data/synsql/databases"
+    FINAL_PAIRED_PATH = "/home/banlujie/data/synsql_5k/reward/reward_train_dataset_new.jsonl"
+    STUCK_LOG_PATH = "/home/banlujie/data/synsql_5k/reward/stuck_tasks_clean.log"
     MAX_WORKERS = 8
     # Pebble 的超時設定，這將是每個子進程任務的硬性限制
-    TASK_TIMEOUT = 15
+    TASK_TIMEOUT = 30
 
     # --- 強健的斷點續傳邏輯 ---
     processed_pairs = set()
@@ -248,4 +248,4 @@ if __name__ == "__main__":
     main()
     end_time = time.time()
     print(f"總執行時間: {end_time - start_time:.2f} 秒")
-    random_split_dataset(input_path="/home/banlujie/data/bird_train/train/reward_train_dataset_new.jsonl", train_output_path="/home/banlujie/data/bird_train/train/reward_train_split.jsonl", eval_output_path="/home/banlujie/data/bird_train/train/reward_eval_split.jsonl", split_ratio=0.05)
+    random_split_dataset(input_path="/home/banlujie/data/synsql_5k/reward/reward_train_dataset_new.jsonl", train_output_path="/home/banlujie/data/synsql_5k/reward/reward_train_split.jsonl", eval_output_path="/home/banlujie/data/synsql_5k/reward/reward_eval_split.jsonl", split_ratio=0.05)

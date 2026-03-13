@@ -150,3 +150,11 @@ eval_results_phi4_mini.json
 eval_results_phi4_mini_sft.json
 .gitignore
 eval_results_qwen2.5_7b_instruct.json
+test_suite_sql_eval/
+.idea/
+test_suite_sql_eval/
+ckpt/
+scm_decoder_trainer/
+scm_model_final_trainer/
+scm_model_final_trainer1/
+eval_res/

@@ -23,7 +23,7 @@ echo "确保网络连接正常且有足够的磁盘空间"
 
 # 生成输出文件名（替换特殊字符）
 OUTPUT_NAME=$(echo "$MODEL_PATH" | sed 's/\//_/g' | sed 's/-/_/g' | tr '[:upper:]' '[:lower:]')
-OUTPUT_PATH="/home/banlujie/RL-NL2SQL/eval_results_${OUTPUT_NAME}.json"
+OUTPUT_PATH="/home/banlujie/RL-NL2SQL/eval_results_${OUTPUT_NAME}_sft.json"
 
 python eval_vllm.py \
     --model_path "$MODEL_PATH" \
@@ -35,7 +35,9 @@ python eval_vllm.py \
     --output_path "$OUTPUT_PATH" \
     --temperature 0.1 \
     --max_tokens 16384 \
-    --timeout 10
+    --timeout 10\
+    --gpu_utilization 0.8 \
+
 
 echo "=== 评估完成 ==="
 echo "结果保存在: $OUTPUT_PATH"

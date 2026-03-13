@@ -132,10 +132,16 @@ def create_ppo_reward_wrapper(
             "credit_weight": credit_weight,
             "credit_aggregation": credit_aggregation
         })
+
+        # 优先使用全局配置，允许调用方通过 kwargs 覆盖。
+        if "use_sql_execution" not in kwargs:
+            kwargs["use_sql_execution"] = _ppo_reward_config.get("use_sql_execution", True)
         
         # 检查是否有预计算的reward model分数
         reward_model_scores = kwargs.pop("reward_model_scores", None)
         
+        if kwargs.get("use_sql_execution", False):
+            return original_reward_func(queries, prompts, labels, **kwargs)
         if reward_model_scores is not None:
             # 如果有预计算的分数，使用PPO模式
             return ppo_reward_func_without_sql(
@@ -160,7 +166,7 @@ def _compute_std(values: List[float]) -> float:
 
 # 全局配置
 _ppo_reward_config = {
-    "use_sql_execution": False,  # PPO阶段默认不执行SQL
+    "use_sql_execution": True,  # PPO阶段默认启用SQL执行奖励
     "enable_credit": True,
     "credit_weight": 0.1,
     "credit_aggregation": "mean"

@@ -1,8 +1,13 @@
+import json
 import os
 import pysqlite3 as sqlite3
 from collections import defaultdict
 import re
 import signal
+from func_timeout import func_timeout, FunctionTimedOut
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
 
 
 def serialize_schema(schema_info: dict) -> str:
@@ -94,7 +99,7 @@ def execute_sql(db_path: str, sql: str):
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(sql)
-            result =  sorted(cursor.fetchall(), key=lambda row: tuple(str(x) for x in row))
+            result =  frozenset(cursor.fetchall())
             return result
 
     except Exception as e:
@@ -153,38 +158,92 @@ def get_detailed_score(db_path: str, sql_to_evaluate: str, ground_truth_result: 
         return {"sql": sql_to_evaluate, "score": score, "is_correct": is_correct, "error": None}
 
 
-class TimeoutException(Exception):
-    pass
-
-
-def timeout_handler(signum, frame):
-    """超時信號的處理函式，直接拋出異常"""
-    raise TimeoutException("SQL 執行超時！")
+def _execute_sql_internal(db_path, sql):
+    """
+    内部函数，执行SQL查询，用于func_timeout包装
+    """
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        result = cursor.fetchall()
+        filtered_result = frozenset(result)
+    return filtered_result
 
 
 def execute_sql_with_timeout(db_path, sql, timeout_seconds=5):
     """
-    執行 SQL，但帶有超時限制。
+    使用 func_timeout 执行 SQL，带有超时限制。
+    相比使用 signal 的方式，func_timeout 更稳定且跨平台兼容。
+    
+    Args:
+        db_path: SQLite数据库路径
+        sql: 要执行的SQL语句
+        timeout_seconds: 超时时间（秒）
+    
+    Returns:
+        list: 查询结果，或错误信息字符串
     """
-    # 設定信號處理器
-    signal.signal(signal.SIGALRM, timeout_handler)
-    # 啟動一個倒數計時器，在 timeout_seconds 秒後發送 SIGALRM 信號
-    signal.alarm(timeout_seconds)
-
     try:
-        # 執行原本的 SQL 邏輯
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            result = cursor.fetchall()
-            filtered_result = sorted(result, key=lambda row: tuple(str(x) for x in row))
-        # 如果成功執行，取消鬧鐘
-        signal.alarm(0)
-        return filtered_result
-    except TimeoutException as e:
-        # 如果捕獲到我們自訂的超時異常
-        return f"Error: {e}"
+        # 使用 func_timeout 执行SQL查询
+        result = func_timeout(timeout_seconds, _execute_sql_internal, args=(db_path, sql))
+        return result
+    except FunctionTimedOut:
+        return f"Error: SQL execution timed out after {timeout_seconds} seconds"
     except Exception as e:
-        # 如果是其他 SQL 執行錯誤
-        signal.alarm(0)  # 同樣要取消鬧鐘
         return f"Error: {e}"
+
+def sample_table_values(db_file_dir, table_names, limit_num):
+    db_values_dict = dict()
+    
+    conn = sqlite3.connect(db_file_dir)
+    cursor = conn.cursor()
+
+    for table_name in table_names:
+        cursor.execute(f"PRAGMA table_info(`{table_name}`);")
+        columns = cursor.fetchall()
+        column_names = [column[1] for column in columns]
+
+        for column_name in column_names:
+            # cursor.execute(f"SELECT `{column_name}` FROM `{table_name}` WHERE `{column_name}` IS NOT NULL LIMIT {limit_num};")
+            query = f"""
+            SELECT `{column_name}` 
+            FROM (
+                SELECT DISTINCT `{column_name}` 
+                FROM `{table_name}` 
+                WHERE `{column_name}` IS NOT NULL and `{column_name}` != ''
+            ) AS unique_values
+            LIMIT {limit_num};
+            """
+            cursor.execute(query)
+            values = cursor.fetchall()
+            values = [value[0] for value in values]
+
+            # truncate too long strings
+            for idx in range(len(values)):
+                if isinstance(values[idx], str):
+                    values[idx] = values[idx][:40]
+
+            if len(values) > 0:
+                db_values_dict[f"{table_name}.{column_name}".lower()] = values
+    
+    cursor.close()
+    conn.close()
+
+    return db_values_dict
+
+def polars_converter(input_file, output_file):
+    import polars as pl
+    # ------------------
+
+    print(f"Reading {input_file} and writing to {output_file}...")
+
+    # Polars 可以流式处理，从读取到写入一步到位
+    df = pl.read_parquet(input_file)
+    df_transformed = df.with_columns(
+        pl.col("prompt").list.get(0).struct.field("content").alias("prompt")
+    )
+    df_transformed.write_ndjson(output_file)
+    print("Conversion complete!")
+
+if __name__ == "__main__":
+    polars_converter("/home/banlujie/data/synsql_5k/train.parquet","/home/banlujie/data/synsql_5k/train.jsonl")

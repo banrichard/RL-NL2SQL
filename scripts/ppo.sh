@@ -1,42 +1,61 @@
-
-
-ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{"working_dir": "/home/banlujie/RL-NL2SQL"}' \
-   -- python3 -m openrlhf.cli.train_ppo_ray \
+CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python3 train_ppo_ray.py \
    --ref_num_nodes 1 \
-   --ref_num_gpus_per_node 1 \
+   --ref_num_gpus_per_node 2 \
    --reward_num_nodes 1 \
-   --reward_num_gpus_per_node 1 \
+   --reward_num_gpus_per_node 2 \
    --critic_num_nodes 1 \
-   --critic_num_gpus_per_node 1 \
+   --critic_num_gpus_per_node 2 \
    --actor_num_nodes 1 \
-   --actor_num_gpus_per_node 1 \
+   --actor_num_gpus_per_node 2 \
+   --scm_num_nodes 1 \
+   --scm_num_gpus_per_node 2 \
    --vllm_num_engines 1 \
    --vllm_tensor_parallel_size 1 \
-   --colocate_critic_reward \
-   --colocate_actor_ref \
-   --pretrain /home/banlujie/RL-NL2SQL/ckpt/phi4_mini_reasoning \
-   --reward_pretrain /home/banlujie/RL-NL2SQL/ckpt/phi4_7b-rm \
-   --save_path /home/banlujie/RL-NL2SQL/ckpt/phi4_7b \
-   --micro_train_batch_size 16 \
+   --vllm_gpu_memory_utilization 0.4 \
+   --gamma 1.0 \
+   --pretrain seeklhy/OmniSQL-7B \
+   --reward_pretrain /home/banlujie/RL-NL2SQL/ckpt/omnisql-7b-rm \
+   --save_path ./ckpt/omnisql-7b-ppo \
+   --ckpt_path ./ckpt/ckpt/omnisql-7b-ppo \
+   --save_hf_ckpt \
+   --micro_train_batch_size 8 \
    --train_batch_size 128 \
-   --micro_rollout_batch_size 32 \
-   --rollout_batch_size 1024 \
-   --max_samples 100000 \
-   --max_epochs 1 \
-   --prompt_max_len 1024 \
-   --generate_max_len 1024 \
+   --micro_rollout_batch_size 16 \
+   --rollout_batch_size 128 \
+   --n_samples_per_prompt 8 \
+   --num_episodes 3 \
+   --max_epochs 4 \
+   --prompt_max_len 4096 \
+   --max_samples 400000 \
+   --generate_max_len 8192 \
    --zero_stage 3 \
-   --bf16 \
-   --actor_learning_rate 5e-7 \
-   --critic_learning_rate 9e-6 \
-   --init_kl_coef 0.01 \
-   --prompt_data OpenRLHF/prompt-collection-v0.1 \
-   --input_key context_messages \
-   --apply_chat_template \
-   --packing_samples \
+   --param_dtype bf16 \
+   --actor_learning_rate 2e-6 \
+   --critic_learning_rate 5e-6 \
+   --lr_warmup_ratio 0.1 \
+   --init_kl_coef 0.001 \
+   --prompt_data /data/banlujie/data/synsql_5k/train.jsonl\
+   --input_key prompt \
+   --label_key sql \
    --normalize_reward \
-   --adam_offload \
-   --attn_implementation flash_attention_2 \
    --gradient_checkpointing \
-   --use_wandb 5c00be123cfc09b2a58a5d1071ffbfba53cd88d3
+   --packing_samples \
+   --vllm_sync_backend nccl \
+   --enforce_eager \
+   --vllm_enable_sleep \
+   --deepspeed_enable_sleep \
+   --use_dynamic_batch \
+   --scm_pretrain ./scm_decoder_trainer/final_checkpoint\
+   --enable_entropy_filtering \
+   --train_max_tokens_per_gpu 8192\
+   --enable_vllm_is_correction \
+   --colocate_reward_critic_scm \
+   --colocate_actor_ref \
+   --adam_offload \
+   --use_wandb True\
+      # 
+   # --enable_entropy_filtering \
+      # --colocate_actor_ref \
+   #       --use_kl_loss \
+   # --kl_estimator k3 \
+      # --advantage_estimator reinforce \

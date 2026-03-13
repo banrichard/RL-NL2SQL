@@ -253,15 +253,15 @@ def process_dev_set(input_dev_file="dev.json", output_dev_file="sft_dev.json"):
 
 
 if __name__ == "__main__":
-    validate_dataset_multiprocess(train_path="/home/banlujie/data/bird_dev/dev.json",
-    db_root_path="/home/banlujie/data/bird_dev/dev_databases", max_workers=8, timeout=10)
+    # validate_dataset_multiprocess(train_path="/home/banlujie/data/bird_dev/dev.json",
+    # db_root_path="/home/banlujie/data/bird_dev/dev_databases", max_workers=8, timeout=10)
     # split_dataset_by_db(input_train_file="/home/banlujie/data/bird_train/train/sft_train_clean.json",
     #                     eval_db_ratio=0.05,
     #                     output_train_file="/home/banlujie/data/bird_train/train/final_train_sft.json",
     #                     output_eval_file="/home/banlujie/data/bird_train/train/final_eval_sft.json")
-    # build_dataset(train_path="/home/banlujie/data/bird_dev/dev.json",
-    #               tables_path="/home/banlujie/data/bird_dev/dev_tables.json",
-    #               output_path="/home/banlujie/data/bird_dev/dev_eval/dev_eval.json")
-    # build_dataset(train_path="/home/banlujie/data/bird_train/train/final_eval_sft.json",
-    #               tables_path="/home/banlujie/data/bird_train/train/train_tables.json",
-    #               output_path="/home/banlujie/data/bird_train/train/eval_sft.json")
+    build_dataset(train_path="/home/banlujie/data/bird_train/train/sft/final_train_sft.json",
+                  tables_path="/home/banlujie/data/bird_train/train/tables.json",
+                  output_path="/home/banlujie/data/bird_dev/dev_eval/dev_eval.json")
+    build_dataset(train_path="/home/banlujie/data/bird_train/train/final_eval_sft.json",
+                  tables_path="/home/banlujie/data/bird_train/train/train_tables.json",
+                  output_path="/home/banlujie/data/bird_train/train/eval_sft.json")

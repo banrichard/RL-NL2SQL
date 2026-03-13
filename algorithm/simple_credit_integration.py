@@ -226,7 +226,8 @@ def create_credit_enhanced_ppo_trainer(
     credit_model_actor_group=None,
     credit_weight: float = 0.1,
     enable_credit_shaping: bool = True,
-    credit_aggregation: str = "weighted_sum"
+    credit_aggregation: str = "weighted_sum",
+    use_sql_execution: bool = True,
 ):
     """
     简化版本：不使用继承，直接返回原始trainer类
@@ -251,13 +252,16 @@ def create_credit_enhanced_ppo_trainer(
     # 配置PPO阶段的奖励函数
     from algorithm.ppo_reward import set_ppo_reward_config
     set_ppo_reward_config(
-        use_sql_execution=False,  # PPO阶段不执行SQL
+        use_sql_execution=use_sql_execution,
         enable_credit=enable_credit_shaping,
         credit_weight=credit_weight,
         credit_aggregation=credit_aggregation
     )
-    
-    print("PPO reward function configured to use reward model + credit model (no SQL execution)")
+
+    if use_sql_execution:
+        print("PPO reward function configured to use SQL execution reward (+ optional credit shaping)")
+    else:
+        print("PPO reward function configured to use reward model + credit model (no SQL execution)")
     
     return base_trainer_class
 

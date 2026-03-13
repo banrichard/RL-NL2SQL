@@ -109,15 +109,17 @@ python3 train_ppo_ray.py \
    --train_batch_size 32 \
    --micro_rollout_batch_size 8 \
    --rollout_batch_size 256 \
-   --max_samples 50000 \
-   --max_epochs 10 \
+  --num_episodes 3 \
+  --max_samples 200000 \
+  --max_epochs 4 \
    --prompt_max_len 1024 \
    --generate_max_len 1024 \
    --zero_stage 3 \
    --bf16 \
-   --actor_learning_rate 5e-7 \
-   --critic_learning_rate 9e-6 \
-   --init_kl_coef 0.01 \
+  --actor_learning_rate 2e-6 \
+  --critic_learning_rate 5e-6 \
+  --lr_warmup_ratio 0.1 \
+  --init_kl_coef 0.001 \
    --prompt_data $PROMPT_DATA_PATH \
    --input_key $INPUT_KEY \
    --label_key SQL \

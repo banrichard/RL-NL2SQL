@@ -1,15 +1,42 @@
 # generate_candidates_torchrun.py
+import os
 
+if "LOCAL_RANK" in os.environ:
+    lr = int(os.environ["LOCAL_RANK"])
+    # 若外部未指定 CVD，则按 LOCAL_RANK 指定单卡
+    if "CUDA_VISIBLE_DEVICES" not in os.environ or not os.environ["CUDA_VISIBLE_DEVICES"]:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(lr)
+    else:
+        # 若外部已经设定了多张卡，可按索引缩减为当前进程的那一张
+        vis = [x.strip() for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip() != ""]
+        if 0 <= lr < len(vis):
+            os.environ["CUDA_VISIBLE_DEVICES"] = vis[lr]
+        else:
+            # 兜底：至少保证有一张卡可见
+            os.environ["CUDA_VISIBLE_DEVICES"] = vis[0]
 import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import json
 from tqdm import tqdm
-import os
+
 import numpy as np
 from datasets import load_dataset
 from utils import serialize_schema, extract_sql_from_output
 
+from contextlib import contextmanager
+
+@contextmanager
+def _isolated_env_for_vllm():
+    """在创建 LLM 前临时移除 torchrun 的分布式环境变量，避免 vLLM 误用。"""
+    keys = ["MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", "LOCAL_RANK", "LOCAL_WORLD_SIZE"]
+    saved = {k: os.environ[k] for k in keys if k in os.environ}
+    try:
+        for k in keys:
+            os.environ.pop(k, None)
+        yield
+    finally:
+        os.environ.update(saved)
 
 def setup_distributed():
     """初始化分散式環境"""
@@ -37,13 +64,39 @@ def generate_and_write(
     """
     這個函式包含了模型載入和生成的核心邏輯。
     """
-    device = torch.device("cuda", local_rank)
-
+    with _isolated_env_for_vllm():
+        from vllm import LLM, SamplingParams
+        llm = LLM(
+            model=sft_model_path,
+            tensor_parallel_size=1,          # 每进程1卡
+            gpu_memory_utilization=0.3,
+            trust_remote_code=True,
+            # enforce_eager=True,            # 若初始化仍卡，先打开这一行定位问题
+        )
+        sampling = SamplingParams(
+            max_tokens=8192,
+            temperature=0.8,
+            top_p=0.95,
+            top_k=50,
+            n=num_candidates,
+        )
     tokenizer = AutoTokenizer.from_pretrained(sft_model_path, padding_side='left')
-    model = AutoModelForCausalLM.from_pretrained(sft_model_path,
-                                                 device_map={"": "cuda"})  # device_map 改為 cuda
-    model.eval()
 
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
+    llm = LLM(
+        model=sft_model_path,
+        tensor_parallel_size=1,              # 每个进程1卡
+        gpu_memory_utilization=0.4,
+        trust_remote_code=True               # 若模型需要自定义代码
+    )
+    sampling = SamplingParams(
+        max_tokens=8192,
+        temperature=0.8,
+        top_p=0.95,
+        top_k=50,
+        n=num_candidates,                    # 每个 prompt 生成 n 个候选
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -75,22 +128,13 @@ def generate_and_write(
             batch_tasks = tasks_to_process[i: i + max_batch_size]
             batch_prompts = [task['prompt'] for task in batch_tasks]
 
-            inputs = tokenizer(batch_prompts, return_tensors="pt", padding=True, truncation=True).to(device)
-            with torch.no_grad():
-                generated_outputs = model.generate(
-                    **inputs, max_new_tokens=100, do_sample=True, top_k=50,
-                    top_p=0.95, temperature=0.8, num_return_sequences=num_candidates
-                )
-
-            input_len = inputs['input_ids'].shape[1]
-            decoded_sqls = tokenizer.batch_decode(generated_outputs[:, input_len:], skip_special_tokens=True)
+            request_outputs = llm.generate(batch_prompts, sampling_params=sampling)
 
             results = []
-            for j in range(len(batch_prompts)):
-                start_index = j * num_candidates
-                end_index = (j + 1) * num_candidates
+            for req_out in request_outputs:
                 prompt_candidates = [
-                    extract_sql_from_output(sql.strip()) for sql in decoded_sqls[start_index:end_index]
+                    extract_sql_from_output(out.text.strip())
+                    for out in req_out.outputs
                 ]
                 results.append(list(set(filter(None, prompt_candidates))))
 
@@ -100,7 +144,7 @@ def generate_and_write(
                 f_out.write(json.dumps({
                     "prompt": item_meta['prompt'],
                     "db_id": item['db_id'],
-                    "chosen_sql": item['SQL'],
+                    "chosen_sql": item['SQL'] if 'SQL' in item else item.get('sql', ''),
                     "candidate_sqls": candidates
                 }) + "\n")
 
@@ -116,31 +160,45 @@ def main():
     local_rank, world_size = setup_distributed()
 
     # 參數設定
-    SFT_MODEL_PATH = "/home/banlujie/RL-NL2SQL/checkpoint/phi4_mini_reasoning"
-    TRAIN_PATH = "/home/banlujie/data/bird_train/train/train_clean.json"
+    SFT_MODEL_PATH = "seeklhy/OmniSQL-7B"
+    TRAIN_PATH = "/home/banlujie/data/synsql_5k/train.jsonl"
     TABLES_PATH = "/home/banlujie/data/bird_train/train/train_tables.json"
-    OUTPUT_PATH = "/home/banlujie/data/bird_train/train/reward_candidates_clean.jsonl"
-
+    OUTPUT_PATH = "/home/banlujie/data/synsql_5k/reward/reward_candidates_clean.jsonl"
+    BUILD_BIRD = False
     MAX_BATCH_SIZE_PER_GPU = 4
     NUM_CANDIDATES_PER_PROMPT = 5
 
     # 只有主程序 (rank 0) 執行一次資料載入和準備
     if local_rank == 0:
         print("主程序 (RANK 0)：正在載入與準備資料...")
-        with open(TRAIN_PATH, 'r', encoding='utf-8') as f:
-            train_data = json.load(f)
-        with open(TABLES_PATH, 'r', encoding='utf-8') as f:
-            tables_data = json.load(f)
-        schema_map = {db['db_id']: db for db in tables_data}
-        prompt_template = """### Database Schema:\n{schema}\n\n### Question:\n{question}\n\n### SQL Query:\n"""
+        if BUILD_BIRD:
+            with open(TRAIN_PATH, 'r', encoding='utf-8') as f:
+                train_data = json.load(f)
 
-        all_tasks = []
-        for item in train_data:
-            db_id = item['db_id']
-            if db_id not in schema_map: continue
-            schema_str = serialize_schema(schema_map[db_id])
-            prompt_text = prompt_template.format(schema=schema_str, question=item['question'])
-            all_tasks.append({"prompt": prompt_text, "original_item": item})
+            with open(TABLES_PATH, 'r', encoding='utf-8') as f:
+                tables_data = json.load(f)
+            schema_map = {db['db_id']: db for db in tables_data}
+            prompt_template = """### Database Schema:\n{schema}\n\n### Question:\n{question}\n\n### SQL Query:\n"""
+
+            all_tasks = []
+            for item in train_data:
+                db_id = item['db_id']
+                if db_id not in schema_map: continue
+                schema_str = serialize_schema(schema_map[db_id])
+                prompt_text = prompt_template.format(schema=schema_str, question=item['question'])
+                all_tasks.append({"prompt": prompt_text, "original_item": item})
+        else:
+            train_data = []
+            with open(TRAIN_PATH, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        train_data.append(json.loads(line))
+                        # 在这里处理每一行的数据
+                    except json.JSONDecodeError:
+                        print(f"Could not decode line: {line}")
+            all_tasks = []
+            for item in train_data:
+                all_tasks.append({"prompt": item['prompt'], "original_item": item})
         print(f"資料準備完成，共 {len(all_tasks)} 個任務。")
     else:
         all_tasks = None
