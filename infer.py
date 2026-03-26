@@ -8,12 +8,80 @@ import json
 import os
 import re
 import argparse
+import tempfile
+import shutil
 from vllm import LLM, SamplingParams
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # 导入数据集工具函数
 from dataset.utils import serialize_schema
+
+# 尝试导入peft（用于LoRA合并）
+try:
+    from peft import PeftModel
+    PEFT_AVAILABLE = True
+except ImportError:
+    PEFT_AVAILABLE = False
+    print("警告: peft 库未安装，无法使用LoRA功能")
+
+
+def merge_lora_adapter(base_model_path, lora_adapter_path, output_dir=None):
+    """
+    合并LoRA adapter到基础模型
+    
+    Args:
+        base_model_path: 基础模型路径
+        lora_adapter_path: LoRA adapter路径
+        output_dir: 输出目录（如果None，则使用临时目录）
+    
+    Returns:
+        合并后的模型路径
+    """
+    if not PEFT_AVAILABLE:
+        raise ImportError("peft 库未安装，请运行: pip install peft")
+    
+    print(f"开始合并 LoRA adapter...")
+    print(f"  基础模型: {base_model_path}")
+    print(f"  LoRA adapter: {lora_adapter_path}")
+    
+    # 加载基础模型
+    print("加载基础模型...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        torch_dtype="bfloat16",
+        device_map="auto"
+    )
+    
+    # 加载LoRA adapter
+    print("加载 LoRA adapter...")
+    model = PeftModel.from_pretrained(base_model, lora_adapter_path)
+    
+    # 合并权重
+    print("合并权重...")
+    merged_model = model.merge_and_unload()
+    
+    # 保存合并后的模型
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="merged_lora_")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"保存合并后的模型到: {output_dir}")
+    
+    merged_model.save_pretrained(output_dir, safe_serialization=True)
+    
+    # 复制tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    tokenizer.save_pretrained(output_dir)
+    
+    # 复制其他配置文件
+    for file_name in ["generation_config.json", "chat_template.jinja", "preprocessor_config.json"]:
+        src = os.path.join(base_model_path, file_name)
+        if os.path.exists(src):
+            shutil.copy(src, os.path.join(output_dir, file_name))
+    
+    print(f"LoRA 合并完成！合并后的模型路径: {output_dir}")
+    return output_dir
 
 
 def extract_sql_from_output(output_text):
@@ -248,6 +316,12 @@ def main():
     parser = argparse.ArgumentParser(description="基于 vLLM 的 SQL 生成评估脚本")
     parser.add_argument("--model_path", type=str, default="/data/banlujie/RL-NL2SQL/ckpt/phi4_mini_reasoning",
                         help="模型路径")
+    parser.add_argument("--base_model_path", type=str, default=None,
+                        help="基础模型路径（用于LoRA加载）")
+    parser.add_argument("--lora_path", type=str, default=None,
+                        help="LoRA adapter路径（如果提供，将合并到模型中）")
+    parser.add_argument("--merged_model_output", type=str, default=None,
+                        help="合并后的模型保存路径（如果None则使用临时目录）")
     parser.add_argument("--dev_path", type=str, default="/data/banlujie/data/bird_dev/dev.json",
                         help="开发集路径")
     parser.add_argument("--tables_path", type=str, default="/data/banlujie/data/bird_dev/dev_tables.json",
@@ -268,7 +342,7 @@ def main():
                         help="生成策略: greedy(贪心) 或 voting(投票)")
     parser.add_argument("--num_candidates", type=int, default=5,
                         help="投票策略时的候选SQL数量")
-    parser.add_argument("--gpu_utilization", type=float, default=0.6,
+    parser.add_argument("--gpu_utilization", type=float, default=0.4,
                         help="GPU利用率（0.0-1.0），控制GPU显存使用")
     parser.add_argument("--output_name", type=str, default="/data/banlujie/RL-NL2SQL/eval_res/vllm_inference_result",
                         help="推理结果输出文件路径")
@@ -282,15 +356,44 @@ def main():
     print(f"温度: {args.temperature}")
     print(f"最大tokens: {args.max_tokens}")
 
-    # 检查路径是否存在
-    # 如果模型路径包含 "/"，可能是 Hugging Face 模型 ID，不需要检查本地存在性
-    if "/" not in args.model_path and not os.path.exists(args.model_path):
-        print(f"错误：模型路径不存在 - {args.model_path}")
-        return
-    elif "/" in args.model_path:
-        print(f"使用 Hugging Face 模型: {args.model_path}")
+    # 处理 LoRA 合并逻辑
+    actual_model_path = args.model_path  # 实际用来加载的模型路径
+    
+    if args.lora_path:
+        # 如果指定了 LoRA adapter，需要先确定基础模型路径
+        if not args.base_model_path:
+            print("错误：使用 LoRA adapter 需要指定 --base_model_path")
+            return
+        
+        if not os.path.exists(args.base_model_path):
+            print(f"错误：基础模型路径不存在 - {args.base_model_path}")
+            return
+        
+        if not os.path.exists(args.lora_path):
+            print(f"错误：LoRA adapter 路径不存在 - {args.lora_path}")
+            return
+        
+        # 合并 LoRA adapter
+        try:
+            actual_model_path = merge_lora_adapter(
+                args.base_model_path,
+                args.lora_path,
+                args.merged_model_output
+            )
+        except Exception as e:
+            print(f"错误：合并 LoRA adapter 失败 - {e}")
+            return
     else:
-        print(f"使用本地模型: {args.model_path}")
+        # 检查路径是否存在
+        if os.path.exists(args.model_path):
+            print(f"使用本地模型: {args.model_path}")
+        elif args.model_path.startswith("/") or args.model_path.startswith("."):
+            # 绝对路径或相对路径，但不存在
+            print(f"错误：模型路径不存在 - {args.model_path}")
+            return
+        else:
+            # 不是本地路径，视为 Hugging Face 模型 ID（如 'Qwen/Qwen3.5-9B'）
+            print(f"使用 Hugging Face 模型: {args.model_path}")
 
     if not os.path.exists(args.dev_path):
         print(f"错误：开发集路径不存在 - {args.dev_path}")
@@ -307,47 +410,55 @@ def main():
 
     # 加载模型
     print("正在加载模型...")
-    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    if "Qwen2.5-" in args.model_path:
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(actual_model_path, trust_remote_code=True)
+    except ValueError:
+        print("Fast tokenizer 加载失败，回退到 slow tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(actual_model_path, trust_remote_code=True, use_fast=False)
+    if "Qwen2.5-" in actual_model_path:
         # 151645 is the token id of <|im_end|> (end of turn token in Qwen2.5)
         stop_token_ids = [151645]
-    elif "phi-4-" in args.model_path or "Phi-4-" in args.model_path:
+    elif "phi-4-" in actual_model_path or "Phi-4-" in actual_model_path:
         stop_token_ids = [200020]  # phi-4 uses the same tokenizer as GPT-2
-    elif "deepseek-coder-" in args.model_path:
+    elif "deepseek-coder-" in actual_model_path:
         stop_token_ids = [32021]
-    elif "DeepSeek-Coder-V2" in args.model_path:
+    elif "DeepSeek-Coder-V2" in actual_model_path:
         stop_token_ids = [100001]
-    elif "OpenCoder-" in args.model_path:
+    elif "OpenCoder-" in actual_model_path:
         stop_token_ids = [96539]
-    elif "Meta-Llama-" in args.model_path:
+    elif "Meta-Llama-" in actual_model_path:
         stop_token_ids = [128009, 128001]
-    elif "granite-" in args.model_path:
+    elif "granite-" in actual_model_path:
         # <|end_of_text|> is the end token of granite-3.1 and granite-code
         stop_token_ids = [0]
-    elif "starcoder2-" in args.model_path:
+    elif "starcoder2-" in actual_model_path:
         stop_token_ids = [0]  # <|end_of_text|> is the end token of starcoder2
-    elif "Codestral-" in args.model_path:
+    elif "Codestral-" in actual_model_path:
         stop_token_ids = [2]
-    elif "Mixtral-" in args.model_path:
+    elif "Mixtral-" in actual_model_path:
         stop_token_ids = [2]
-    elif "OmniSQL-" in args.model_path:
+    elif "OmniSQL-" in actual_model_path:
         stop_token_ids = [151645]  # OmniSQL uses the same tokenizer as Qwen2.5
     else:
         print("Use Qwen2.5's stop tokens by default.")
         stop_token_ids = [151645]
     llm = LLM(
         dtype="bfloat16",
-        model=args.model_path,
+        model=actual_model_path,
         max_model_len=args.max_tokens,
         tensor_parallel_size=torch.cuda.device_count(),
         gpu_memory_utilization=args.gpu_utilization,
         swap_space=42,
+        enforce_eager=True,
+        reasoning_parser="qwen3" if "Qwen3.5-" in actual_model_path else None,
+        language_model_only=True if "Qwen3.5-" in actual_model_path else False,
+        enable_prefix_caching=True if "Qwen3.5-" in actual_model_path else False
     )
     print("模型加载完成！")
 
     # 准备 prompts
     print("正在准备 prompts...")
-    if "OmniSQL-" in args.model_path:
+    if "OmniSQL-" in actual_model_path:
         print("Using Omni format prompts...")
         tasks = prepare_prompts_omni(
             dev_data, schema_map, args.template_path, tokenizer, args.system_prompt_path)
@@ -414,9 +525,17 @@ def main():
         data['original_item']["pred_sqls"] = sqls
         results.append(data['original_item'])
     model_name = args.model_path.split("/")[-1]
-    with open(args.output_name+"_"+model_name + ".json", "w", encoding="utf-8") as f:
-        f.write(json.dumps(results, indent=2, ensure_ascii=False))
-    print("推理完成！")
+    output_path_plain = args.output_name + ".json"
+    output_path_with_model = args.output_name + "_" + model_name + ".json"
+
+    serialized = json.dumps(results, indent=2, ensure_ascii=False)
+    with open(output_path_plain, "w", encoding="utf-8") as f:
+        f.write(serialized)
+    with open(output_path_with_model, "w", encoding="utf-8") as f:
+        f.write(serialized)
+
+    print(f"推理完成！结果已保存: {output_path_plain}")
+    print(f"推理完成！结果已保存: {output_path_with_model}")
 
 if __name__ == "__main__":
     main()

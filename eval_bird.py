@@ -1,5 +1,5 @@
 import sys
-import sqlite3
+import pysqlite3 as sqlite3
 import json
 import argparse
 import os
@@ -49,11 +49,13 @@ def compare_sql(question_id, db_file, question, ground_truth, pred_sql) :
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     correctness = 0
+    execute_success = 0  # 0: SQL执行失败, 1: SQL执行成功
 
     try:
         conn.execute("BEGIN TRANSACTION;")
         cursor.execute(pred_sql)
         predicted_res = cursor.fetchall()
+        execute_success = 1  # SQL执行成功
         cursor.execute(ground_truth)
         ground_truth_res = cursor.fetchall()
         print('Successfully executed')
@@ -61,10 +63,11 @@ def compare_sql(question_id, db_file, question, ground_truth, pred_sql) :
             correctness = 1
         conn.rollback()
     except:
+        execute_success = 0  # SQL执行失败
         conn.rollback()
     finally:
         conn.close()
-    return question_id, db_file, question, ground_truth, pred_sql, correctness
+    return question_id, db_file, question, ground_truth, pred_sql, correctness, execute_success
 
 def compare_sql_wrapper(args, timeout):
     '''Wrap execute_sql for timeout'''
@@ -73,9 +76,9 @@ def compare_sql_wrapper(args, timeout):
     except KeyboardInterrupt:
         sys.exit(0)
     except FunctionTimedOut:
-        result = (*args, 0)
+        result = (*args, 0, 0)  # correctness=0, execute_success=0
     except Exception as e:
-        result = (*args, 0)
+        result = (*args, 0, 0)  # correctness=0, execute_success=0
     return result
 
 def execute_sql_wrapper(data_idx, db_file, sql, timeout):
@@ -94,7 +97,7 @@ def execute_sql_wrapper(data_idx, db_file, sql, timeout):
 
 def execute_callback_evaluate_sql(result):
     '''Store the execution result in the collection'''
-    question_id, db_file, question, ground_truth, pred_sql, correctness = result
+    question_id, db_file, question, ground_truth, pred_sql, correctness, execute_success = result
     # evaluation_res = dict()
     # evaluation_res['question_id'] = question_id
     # evaluation_res["db_file"] = db_file
@@ -109,17 +112,18 @@ def execute_callback_evaluate_sql(result):
             "question": question,
             "ground_truth": ground_truth,
             "pred_sql": pred_sql,
-            "correctness": correctness
+            "correctness": correctness,
+            "execute_success": execute_success
         }
     )
 
-    print('Done:', question_id, correctness) # Print the progress
+    print('Done:', question_id, 'correctness:', correctness, 'execute_success:', execute_success) # Print the progress
     sys.stdout.flush()
     sys.stderr.flush()
 
 def execute_callback_execute_sqls(result):
     data_idx, db_file, sql, query_result, valid = result
-    print('Done:', data_idx) # Print the progress
+    # print('Done:', data_idx) # Print the progress
 
     execution_results.append(
         {
@@ -245,6 +249,12 @@ def run_eval(gold_file, pred_file, db_path, mode, save_pred_sqls, num_cpus=20, t
                 print("Pred:", res["pred_sql"])
                 print("-"*30)
         print("EX Accuracy (greedy search):", sum(evaluation_scores)/len(evaluation_scores))
+        
+        # 统计SQL执行成功的数量
+        execute_success_scores = [res["execute_success"] for res in evaluation_results]
+        execute_success_count = sum(execute_success_scores)
+        print("Execute Success Count:", execute_success_count)
+        print("Execute Success Rate:", execute_success_count/len(evaluation_scores))
 
         return sum(evaluation_scores)/len(evaluation_scores), pred_sqls
     elif mode == "major_voting":
@@ -281,10 +291,17 @@ def run_eval(gold_file, pred_file, db_path, mode, save_pred_sqls, num_cpus=20, t
         evaluation_results = sorted(evaluation_results, key=lambda x:x['question_id'])
         evaluation_scores = [res["correctness"] for res in evaluation_results]
         print("EX Accuracy (major voting):", sum(evaluation_scores)/len(evaluation_scores))
+        
+        # 统计SQL执行成功的数量
+        execute_success_scores = [res["execute_success"] for res in evaluation_results]
+        execute_success_count = sum(execute_success_scores)
+        print("Execute Success Count:", execute_success_count)
+        print("Execute Success Rate:", execute_success_count/len(evaluation_scores))
 
         return sum(evaluation_scores)/len(evaluation_scores), mj_pred_sqls
     elif mode == "pass@k":
         all_scores = []
+        all_execute_success = []  # 保存所有采样的execute_success分数
         sampling_num = len(pred_results[0][pred_sql_key])
 
         db_files = []
@@ -297,9 +314,19 @@ def run_eval(gold_file, pred_file, db_path, mode, save_pred_sqls, num_cpus=20, t
             evaluate_sqls_parallel(db_files, questions, pred_sqls_for_specific_sample_idx, ground_truth_sqls, num_cpus=num_cpus, timeout=timeout)
             evaluation_results = sorted(evaluation_results, key=lambda x:x['question_id'])
             evaluation_scores = [res["correctness"] for res in evaluation_results]
+            execute_success_scores = [res["execute_success"] for res in evaluation_results]
             all_scores.append(evaluation_scores)
+            all_execute_success.append(execute_success_scores)
+        
         pass_at_k_scores = [1 if any(column) else 0 for column in zip(*all_scores)]
         print(f"EX Accuracy (pass@{sampling_num}):", sum(pass_at_k_scores)/len(pass_at_k_scores))
+        
+        # 统计SQL执行成功的数量（对所有采样）
+        execute_success_at_k_scores = [1 if any(column) else 0 for column in zip(*all_execute_success)]
+        execute_success_count = sum(execute_success_at_k_scores)
+        print("Execute Success Count (pass@k):", execute_success_count)
+        print("Execute Success Rate (pass@k):", execute_success_count/len(execute_success_at_k_scores))
+        
         return sum(pass_at_k_scores)/len(pass_at_k_scores), None
     else:
         raise ValueError("mode should be in [greedy_search, major_voting, pass@k]")

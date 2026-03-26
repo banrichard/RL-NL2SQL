@@ -14,6 +14,9 @@ This schema describes the database's structure, including tables, columns, prima
 Question:
 {question}
 
+Evidence:
+{evidence}
+
 Instructions:
 - Make sure you only output the information that is asked in the question. If the question asks for a specific column, make sure to only include that column in the SELECT clause, nothing more.
 - The generated query should return all of the information asked in the question without any missing or extra information.
