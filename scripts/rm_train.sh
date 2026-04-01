@@ -1,27 +1,30 @@
 export HTTPS_PROXY="http://127.0.0.1:7890"
 export HTTP_PROXY="http://127.0.0.1:7890"
 
-deepspeed --module --include localhost:0,2,3 openrlhf.cli.train_rm \
-   --save_path /home/banlujie/RL-NL2SQL/ckpt/omnisql-7b-rm\
-   --save_steps 500 \
-   --logging_steps 50 \
-   --eval_steps 500 \
-   --train_batch_size 240 \
+deepspeed --module --include localhost:4,5,6,7 --master_port 29911 openrlhf.cli.train_rm \
+   --save_path /data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm \
+   --save_steps 25 \
+   --logging_steps 5 \
+   --eval_steps 25 \
+   --train_batch_size 256 \
    --micro_train_batch_size 8 \
-   --pretrain seeklhy/OmniSQL-7B \
-   --bf16 \
-   --max_epochs 3 \
-   --max_len 8192 \
+   --pretrain Qwen/Qwen3-0.6B \
+   --param_dtype bf16 \
+   --max_epochs 1 \
+   --max_len 4096 \
    --zero_stage 3 \
-   --learning_rate 9e-6 \
-   --dataset /home/banlujie/data/synsql_5k/reward/reward_train_split.jsonl \
-   --eval_dataset /home/banlujie/data/synsql_5k/reward/reward_eval_split.jsonl \
+   --learning_rate 3e-6 \
+   --lr_warmup_ratio 0.05 \
+   --l2 0.01 \
+   --loss sigmoid \
+   --compute_fp32_loss \
+   --dataset /data/banlujie/data/bird_dev/reward/v1_prm_train.jsonl \
+   --eval_dataset /data/banlujie/data/bird_dev/reward/v1_prm_eval.jsonl \
    --chosen_key chosen \
-   --margin_loss\
    --rejected_key rejected \
    --attn_implementation flash_attention_2 \
-   --load_checkpoint \
    --packing_samples \
    --gradient_checkpointing \
-    --use_wandb True \
+   --use_wandb True \
    --wandb_project entropy_rl
+   # --load_checkpoint \

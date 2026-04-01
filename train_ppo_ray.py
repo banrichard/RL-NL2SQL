@@ -19,19 +19,19 @@ from openrlhf.trainer.ray.ppo_actor import PolicyModelActor
 from openrlhf.trainer.ray.ppo_critic import CriticModelActor
 from openrlhf.utils import get_strategy
 
-try:
-    from algorithm.scm_actor import parse_schema  # 導入 parse_schema
-    from algorithm.scm_actor_decoder import SCM_DecoderModelActor as SCM_ModelActor
-    SCM_AVAILABLE = True
-    print("✅ SCM components imported successfully.")
-except ImportError as e:
-    print(f"⚠️ Warning: Could not import SCM components: {e}. SCM integration will be disabled.")
-    SCM_AVAILABLE = False
-    SCM_ModelActor = None
+# try:
+# #     from algorithm.scm_actor import parse_schema  # 導入 parse_schema
+# #     from algorithm.scm_actor_decoder import SCM_DecoderModelActor as SCM_ModelActor
+# #     SCM_AVAILABLE = True
+# #     print("✅ SCM components imported successfully.")
+# # except ImportError as e:
+# #     print(f"⚠️ Warning: Could not import SCM components: {e}. SCM integration will be disabled.")
+# #     SCM_AVAILABLE = False
+# #     SCM_ModelActor = None
 
 
-    def parse_schema(schema_string: str) -> dict:  # Dummy function
-        return {"tables": [], "columns": []}
+#     def parse_schema(schema_string: str) -> dict:  # Dummy function
+#         return {"tables": [], "columns": []}
 
 
 def train(args):

@@ -200,6 +200,106 @@ def extract_prefix_context(sql: str, target_clause: str) -> str:
     return "\n".join(parts).strip()
 
 
+def perform_graph_surgery(pred_sql: str, gt_sql: str) -> Optional[Dict]:
+    """Macro-clause alignment to find the first divergence point (t*).
+
+    Parses both ``pred_sql`` and ``gt_sql`` with sqlglot, extracts their
+    clause sequences in ``CLAUSE_ORDER``, and performs a linear scan to
+    find the first clause that differs. Returns a dict with::
+
+        {
+            "prefix_context":   str  – SQL text of all matching clauses before t*
+            "chosen_clause":    str  – the clause from gt_sql at t*
+            "rejected_clause":  str  – the clause from pred_sql at t*
+            "divergent_clause": str  – the CLAUSE_ORDER key where divergence was found
+        }
+
+    Returns ``None`` when:
+        - Either SQL fails to parse (noise)
+        - Both ASTs are structurally identical at the macro-clause level
+        - Structural mismatch is too radical to align (heterogeneous guardrail)
+    """
+    # --- Step 1: Parse ASTs ---
+    pred_root = parse_sql(pred_sql)
+    gt_root = parse_sql(gt_sql)
+    if pred_root is None or gt_root is None:
+        return None
+
+    # --- Heterogeneous guardrail: CTE / set-op mismatch ---
+    # If one is a CTE / UNION / INTERSECT / EXCEPT and the other is a plain
+    # SELECT, macro-clause alignment is ill-posed → discard.
+    from sqlglot import exp as _exp
+    _complex_types = (_exp.Union, _exp.Intersect, _exp.Except)
+    pred_has_cte = bool(pred_root.find(_exp.With))
+    gt_has_cte = bool(gt_root.find(_exp.With))
+    pred_is_compound = isinstance(pred_root, _complex_types)
+    gt_is_compound = isinstance(gt_root, _complex_types)
+    if pred_has_cte != gt_has_cte or pred_is_compound != gt_is_compound:
+        return None
+
+    # --- Step 2: Extract clause sequences ---
+    pred_clauses = clause_expression_map(pred_root)
+    gt_clauses = clause_expression_map(gt_root)
+
+    # If both maps are empty, nothing to compare.
+    if not pred_clauses and not gt_clauses:
+        return None
+
+    # --- Step 3: Find the first divergence (t*) ---
+    prefix_parts: List[str] = []
+    divergent_clause: Optional[str] = None
+    chosen_clause: str = ""
+    rejected_clause: str = ""
+
+    for clause_name in CLAUSE_ORDER:
+        pred_text = pred_clauses.get(clause_name)
+        gt_text = gt_clauses.get(clause_name)
+
+        # Both absent → clause doesn't exist in either query, skip.
+        if pred_text is None and gt_text is None:
+            continue
+
+        # Normalise for comparison: collapse whitespace & lower-case.
+        pred_norm = _squash_ws(pred_text) if pred_text else None
+        gt_norm = _squash_ws(gt_text) if gt_text else None
+
+        if pred_norm == gt_norm:
+            # Clauses match; accumulate into prefix (use gt version).
+            prefix_parts.append(gt_text)  # type: ignore[arg-type]
+            continue
+
+        # --- Divergence found ---
+        divergent_clause = clause_name
+
+        # One side is missing → the other side either added or dropped a clause.
+        if gt_text is None:
+            # Pred has an extra clause that GT doesn't. The "chosen" action is
+            # to omit this clause entirely.
+            chosen_clause = f"/* no {clause_name} clause */"
+            rejected_clause = pred_text  # type: ignore[assignment]
+        elif pred_text is None:
+            # Pred is missing a clause that GT requires.
+            chosen_clause = gt_text
+            rejected_clause = f"/* missing {clause_name} clause */"
+        else:
+            # Both exist but differ.
+            chosen_clause = gt_text
+            rejected_clause = pred_text
+
+        break  # first divergence only
+
+    # No divergence detected at the macro-clause level.
+    if divergent_clause is None:
+        return None
+
+    return {
+        "prefix_context": "\n".join(prefix_parts).strip(),
+        "chosen_clause": chosen_clause,
+        "rejected_clause": rejected_clause,
+        "divergent_clause": divergent_clause,
+    }
+
+
 def build_prm_prompt(rendered_sft_prompt: str, prefix_context: str) -> str:
     return (
         f"{rendered_sft_prompt}\n"
@@ -329,7 +429,7 @@ def process_row_to_records(
             if is_eq:
                 continue  # correct prediction – skip (handled by Strategy 3)
 
-            # Incorrect → Graph Surgery to find t*
+            # Incorrect → first try earliest-repair, then fall back to graph surgery
             try:
                 fixed = fix_failure_with_earliest_repair(
                     db_path=db_path,
@@ -338,26 +438,37 @@ def process_row_to_records(
                     timeout_seconds=timeout_seconds,
                 )
             except Exception:
-                continue
-            if not fixed:
-                continue
+                fixed = None
 
-            target_clause = str(fixed.get("error_type", "SELECT"))
-            modified_sql = str(fixed.get("modified_sql", "")).strip()
-            if not modified_sql:
-                continue
+            if fixed:
+                target_clause = str(fixed.get("error_type", "SELECT"))
+                modified_sql = str(fixed.get("modified_sql", "")).strip()
+                if not modified_sql:
+                    continue
 
-            ext = extract_macro_clauses_and_prefix(
-                sql_chosen=modified_sql,
-                sql_rejected=pred_sql,
-                target_clause=target_clause,
-            )
-            prm_prompt = build_prm_prompt(rendered_sft_prompt, ext["prefix_context"])
-            out.append({
-                "prompt": prm_prompt,
-                "chosen": ext["macro_clause_chosen"],
-                "rejected": ext["macro_clause_rejected"],
-            })
+                ext = extract_macro_clauses_and_prefix(
+                    sql_chosen=modified_sql,
+                    sql_rejected=pred_sql,
+                    target_clause=target_clause,
+                )
+                prm_prompt = build_prm_prompt(rendered_sft_prompt, ext["prefix_context"])
+                out.append({
+                    "prompt": prm_prompt,
+                    "chosen": ext["macro_clause_chosen"],
+                    "rejected": ext["macro_clause_rejected"],
+                })
+            else:
+                # Fallback → perform_graph_surgery (macro-clause alignment)
+                surgery = perform_graph_surgery(pred_sql, gt_sql)
+                if surgery is None:
+                    continue
+
+                prm_prompt = build_prm_prompt(rendered_sft_prompt, surgery["prefix_context"])
+                out.append({
+                    "prompt": prm_prompt,
+                    "chosen": surgery["chosen_clause"],
+                    "rejected": surgery["rejected_clause"],
+                })
 
     # ================================================================
     # Strategy 3 – Combinatorial Fault Injection (unlocked mutations)

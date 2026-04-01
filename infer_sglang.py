@@ -170,9 +170,9 @@ def prepare_tasks(dev_data, schema_map, template_path: str, tokenizer, system_pr
 
         schema_str = serialize_schema(schema_map[db_id])
         evidence = item.get("evidence", "")
-        question = item.get("question", "") + evidence
-
-        prompt_text = template.format(db_id=db_id, db_details=schema_str, question=question)
+        question = item.get("question", "")
+        db_engine = item.get("db_engine", "SQLite")
+        prompt_text = template.format(db_id=db_id, db_details=schema_str, question=question, db_engine=db_engine, evidence=evidence)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt_text},
@@ -217,25 +217,47 @@ def normalize_texts(raw_output) -> List[str]:
     return [str(raw_output)]
 
 
+# 数据集默认路径映射
+DATASET_DEFAULTS = {
+    "bird_dev": {
+        "dev_path": "/data/banlujie/data/bird_dev/dev.json",
+        "tables_path": "/data/banlujie/data/bird_dev/dev_tables.json",
+        "db_root_path": "/data/banlujie/data/bird_dev/dev_databases",
+    },
+    "bird_train": {
+        "dev_path": "/data/banlujie/data/bird_train/train/train.json",
+        "tables_path": "/data/banlujie/data/bird_train/train/train_tables.json",
+        "db_root_path": "/data/banlujie/data/bird_train/train/train_databases",
+    },
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description="基于 SGLang Engine 的 SQL 生成评估脚本")
     parser.add_argument(
+        "--dataset",
+        type=str,
+        default="bird_dev",
+        choices=list(DATASET_DEFAULTS.keys()),
+        help="数据集名称，自动设置 dev_path / tables_path / db_root_path 的默认值",
+    )
+    parser.add_argument(
         "--dev_path",
         type=str,
-        default="/data/banlujie/data/bird_dev/dev.json",
-        help="开发集路径",
+        default=None,
+        help="数据集路径（留空则根据 --dataset 自动设置）",
     )
     parser.add_argument(
         "--tables_path",
         type=str,
-        default="/data/banlujie/data/bird_dev/dev_tables.json",
-        help="表格信息路径",
+        default=None,
+        help="表格信息路径（留空则根据 --dataset 自动设置）",
     )
     parser.add_argument(
         "--db_root_path",
         type=str,
-        default="/data/banlujie/data/bird_dev/dev_databases",
-        help="数据库文件根目录",
+        default=None,
+        help="数据库文件根目录（留空则根据 --dataset 自动设置）",
     )
     parser.add_argument(
         "--template_path",
@@ -283,6 +305,15 @@ def main():
     # 参考 SGLang 官方示例：由 ServerArgs 注入服务端/引擎参数
     ServerArgs.add_cli_args(parser)
     args = parser.parse_args()
+
+    # 根据 --dataset 自动填充未指定的路径
+    ds_defaults = DATASET_DEFAULTS[args.dataset]
+    if args.dev_path is None:
+        args.dev_path = ds_defaults["dev_path"]
+    if args.tables_path is None:
+        args.tables_path = ds_defaults["tables_path"]
+    if args.db_root_path is None:
+        args.db_root_path = ds_defaults["db_root_path"]
     server_args = ServerArgs.from_cli_args(args)
 
     model_path = (
