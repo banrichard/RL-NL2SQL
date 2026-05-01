@@ -25,6 +25,40 @@ except ImportError:
     PEFT_AVAILABLE = False
     print("警告: peft 库未安装，无法使用LoRA功能")
 
+SQL_START_PATTERN = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE)\b", re.IGNORECASE)
+SQL_CTE_START_PATTERN = re.compile(
+    r"\bWITH\b\s+(?:RECURSIVE\s+)?[A-Za-z_][A-Za-z0-9_]*\s+AS\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_sql_candidate(text):
+    if not text:
+        return ""
+
+    sql_candidate = text.strip()
+    for marker in ("<answer>", "</answer>", "<think>", "</think>", "```sql", "```"):
+        sql_candidate = sql_candidate.replace(marker, " ")
+
+    start_matches = [m.start() for m in (SQL_START_PATTERN.search(sql_candidate), SQL_CTE_START_PATTERN.search(sql_candidate)) if m]
+    if not start_matches:
+        return ""
+    sql_candidate = sql_candidate[min(start_matches):].strip()
+
+    stop_idx = len(sql_candidate)
+    for stop_pattern in (r"</answer>", r"```", r"<\|im_end\|>", r"<\|endoftext\|>"):
+        match = re.search(stop_pattern, sql_candidate, re.IGNORECASE)
+        if match and match.start() < stop_idx:
+            stop_idx = match.start()
+    sql_candidate = sql_candidate[:stop_idx].strip()
+
+    if ";" in sql_candidate:
+        sql_candidate = sql_candidate.split(";", 1)[0].strip() + ";"
+    else:
+        sql_candidate = re.split(r"\n\s*\n", sql_candidate, maxsplit=1)[0].strip()
+
+    return sql_candidate
+
 
 def merge_lora_adapter(base_model_path, lora_adapter_path, output_dir=None):
     """
@@ -92,21 +126,25 @@ def extract_sql_from_output(output_text):
     pattern = r"```sql\s*(.*?)\s*```"
     sql_blocks = re.findall(pattern, output_text, re.DOTALL)
     if sql_blocks:
-        # Extract the last SQL query in the response text and remove extra whitespace characters
-        last_sql = sql_blocks[-1].strip()
-        return last_sql
+        sql_candidate = _sanitize_sql_candidate(sql_blocks[-1])
+        if sql_candidate:
+            return sql_candidate
 
     # 1. 优先提取 Qwen XML 格式的 <sql> 标签
     xml_sql_pattern = r'<sql>\s*(.*?)\s*</sql>'
     match = re.search(xml_sql_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate:
+            return sql_candidate
 
     # 2. 尝试匹配 <answer>```sql ... ``` </answer> 格式
     answer_pattern = r'<answer>\s*```sql\s*(.*?)\s*```\s*</answer>'
     match = re.search(answer_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate:
+            return sql_candidate
 
     # 3. 尝试匹配普通的 ```sql ... ``` 格式
 
@@ -114,29 +152,33 @@ def extract_sql_from_output(output_text):
     code_pattern = r'```\s*(.*?)\s*```'
     match = re.search(code_pattern, output_text, re.DOTALL | re.IGNORECASE)
     if match:
-        sql_candidate = match.group(1).strip()
-        # 简单检查是否像 SQL（包含 SELECT、INSERT、UPDATE、DELETE 等关键词）
-        if any(keyword in sql_candidate.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE']):
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate:
             return sql_candidate
 
     # 5. 直接提取首个 SQL 语句 - 改进版本
     # 匹配从 SELECT/INSERT/UPDATE/DELETE 开始到分号或行末的完整语句
-    sql_line_pattern = r'((?:SELECT|INSERT|UPDATE|DELETE)(?:[^;])+(?:;|$))'
+    sql_line_pattern = r'(\b(?:SELECT|INSERT|UPDATE|DELETE)\b[^\n;]*(?:;|$))'
     match = re.search(sql_line_pattern, output_text,
                       re.IGNORECASE | re.MULTILINE)
     if match:
-        sql_candidate = match.group(1).strip()
-        # 确保不是只有一个关键词
-        if len(sql_candidate.split()) > 1:
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate:
             return sql_candidate
 
     # 6. 更宽松的匹配 - 匹配多行 SQL
-    multiline_sql_pattern = r'((?:SELECT|INSERT|UPDATE|DELETE)(?:.|\n)*?)(?:\n\s*\n|\n\s*$|$)'
+    cte_sql_pattern = r'(\bWITH\b\s+(?:RECURSIVE\s+)?[A-Za-z_][A-Za-z0-9_]*\s+AS\s*\((?:.|\n)*?)(?:\n\s*\n|\n\s*$|$)'
+    match = re.search(cte_sql_pattern, output_text, re.IGNORECASE)
+    if match:
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate and 'SELECT' in sql_candidate.upper():
+            return sql_candidate
+
+    multiline_sql_pattern = r'(\b(?:SELECT|INSERT|UPDATE|DELETE)\b(?:.|\n)*?)(?:\n\s*\n|\n\s*$|$)'
     match = re.search(multiline_sql_pattern, output_text, re.IGNORECASE)
     if match:
-        sql_candidate = match.group(1).strip()
-        # 确保有基本的 SQL 结构
-        if len(sql_candidate.split()) > 2 and ('FROM' in sql_candidate.upper() or 'INTO' in sql_candidate.upper()):
+        sql_candidate = _sanitize_sql_candidate(match.group(1))
+        if sql_candidate and ('FROM' in sql_candidate.upper() or 'INTO' in sql_candidate.upper()):
             return sql_candidate
 
     # 7. 按行查找最长的 SQL 语句
@@ -144,13 +186,15 @@ def extract_sql_from_output(output_text):
     max_length = 0
     for line in output_text.splitlines():
         line = line.strip()
-        if line.upper().startswith(('SELECT', 'INSERT', 'UPDATE', 'DELETE')):
+        if re.match(r'^(?:SELECT|INSERT|UPDATE|DELETE)\b', line, re.IGNORECASE):
             if len(line) > max_length:
                 longest_sql = line
                 max_length = len(line)
 
     if longest_sql and len(longest_sql.split()) > 2:
-        return longest_sql
+        sql_candidate = _sanitize_sql_candidate(longest_sql)
+        if sql_candidate:
+            return sql_candidate
 
     return ""
 
@@ -196,7 +240,7 @@ def prepare_prompts_omni(dev_data, schema_map, template_path, tokenizer, system_
         print(f"使用自定义 system prompt: {system_prompt_path}")
     else:
         # 默认 system prompt
-        system_prompt = """You are an expert SQL developer with deep knowledge of database design and query optimization. 
+        system_prompt = """You are an expert SQL developer with deep knowledge of database design and query optimization.
 Your task is to generate accurate, efficient SQL queries based on natural language questions and database schemas.
 
 Key guidelines:
@@ -205,8 +249,18 @@ Key guidelines:
 3. Handle NULL values appropriately
 4. Use SQLite-compatible syntax only
 5. Ensure the query answers exactly what is asked, no more, no less
-6. Follow the XML output format strictly: <sql>your_query_here</sql>
-7. Think step by step and show your reasoning in <think> tags
+6. Output format is mandatory:
+<think>
+...
+</think>
+<answer>
+```sql
+SELECT ...
+```
+</answer>
+7. Do not use <sql>...</sql>, and do not output any text after </answer>
+8. Keep <think> concise (<=120 words) so the final <answer> is not truncated
+9. If an identifier contains spaces, parentheses, %, or hyphens, always quote it with backticks, including alias-qualified usage (e.g., f.`District Code`)
 
 Remember: Accuracy is paramount. Double-check your column names, table relationships, and logic."""
         print("使用默认 system prompt")
@@ -260,7 +314,7 @@ def prepare_prompts(dev_data, schema_map, template_path, tokenizer, system_promp
         print(f"使用自定义 system prompt: {system_prompt_path}")
     else:
         # 默认 system prompt
-        system_prompt = """You are an expert SQL developer with deep knowledge of database design and query optimization. 
+        system_prompt = """You are an expert SQL developer with deep knowledge of database design and query optimization.
 Your task is to generate accurate, efficient SQL queries based on natural language questions and database schemas.
 
 Key guidelines:
@@ -269,8 +323,17 @@ Key guidelines:
 3. Handle NULL values appropriately
 4. Use SQLite-compatible syntax only
 5. Ensure the query answers exactly what is asked, no more, no less
-6. Follow the XML output format strictly: <sql>your_query_here</sql>
-7. Think step by step and show your reasoning in <think> tags
+6. Output format is mandatory:
+<think>
+...
+</think>
+<answer>
+```sql
+SELECT ...
+```
+</answer>
+7. Do not use <sql>...</sql>, and do not output any text after </answer>
+8. Keep <think> concise (<=120 words) so the final <answer> is not truncated
 
 Remember: Accuracy is paramount. Double-check your column names, table relationships, and logic."""
         print("使用默认 system prompt")

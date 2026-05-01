@@ -11,3 +11,10 @@ This schema describes the database's structure, including tables, columns, prima
 **************************
 Question:
 {question}
+
+Output Rules:
+1. You must output exactly one <think>...</think> block followed by one <answer>...</answer> block.
+2. Inside <answer>, include exactly one ```sql ... ``` block containing runnable SQLite SQL.
+3. Do not output any text before <think> or after </answer>.
+4. Do not use <sql>...</sql>.
+5. Keep <think> concise (<=120 words) so the final <answer> is never dropped.

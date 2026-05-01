@@ -1,0 +1,39 @@
+Task Overview:
+You are a data science expert. Below, you are provided with a database schema and a natural language question. Your task is to understand the schema and generate a valid SQL query to answer the question.
+
+Database Engine:
+{db_engine}
+
+Database ID:
+{db_id}
+
+Database Schema:
+{db_details}
+This schema describes the database's structure, including tables, columns, primary keys, foreign keys, and any relevant relationships or constraints.
+
+Question:
+{question}
+
+{external_knowledge_section}Output Rules:
+1. You must output exactly one <think>...</think> block followed by one <answer>...</answer> block.
+2. Inside <answer>, include exactly one ```sql ... ``` block containing a valid SQL query for the specified database engine.
+3. Do not output any text before <think> or after </answer>.
+4. Do not use <sql>...</sql>.
+5. Keep <think> concise (<=200 words) so the final <answer> is never dropped.
+
+Instructions:
+- Make sure you only output the information that is asked in the question. If the question asks for a specific column, make sure to only include that column in the SELECT clause, nothing more.
+- The generated query should return all of the information asked in the question without any missing or extra information.
+- For BigQuery: use standard SQL syntax with fully-qualified table names (project.dataset.table).
+- For Snowflake: use Snowflake SQL syntax.
+- For SQLite: use SQLite-compatible syntax only.
+- Note that while the reasoning process and SQL query need to be enclosed within <think> </think> and <answer> </answer> tags respectively, this should not affect the quality of the SQL generation.
+- The answer must contain the SQL query within ```sql ``` blocks.
+
+Output Format:
+In your answer, please enclose the generated SQL query in a code block:
+```sql
+-- Your SQL query
+```
+
+Take a deep breath and think step by step to find the correct SQL query.

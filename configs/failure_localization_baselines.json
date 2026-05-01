@@ -1,0 +1,82 @@
+{
+  "dataset_path": "/data/banlujie/data/bird_dev/reward/failure_localization_eval.jsonl",
+  "output_prefix": "/data/banlujie/RL-NL2SQL/eval_res/failure_localization_results",
+  "db_root": "/data/banlujie/data/bird_dev/dev_databases",
+  "db_roots_by_source": {
+    "default": ["/data/banlujie/data/bird_dev/dev_databases"],
+    "bird_train": ["/data/banlujie/data/bird_train/train/train_databases"],
+    "synsql_5k_train": [
+      "/data/banlujie/data/synsql/databases",
+      "/data/banlujie/data/synsql"
+    ]
+  },
+  "random_seeds": [42, 43, 44, 45, 46],
+  "baselines": [
+    {
+      "name": "Random-Clause",
+      "type": "random",
+      "enabled": true,
+      "optional": false
+    },
+    {
+      "name": "Last-Clause",
+      "type": "last_clause",
+      "enabled": true,
+      "optional": false
+    },
+    {
+      "name": "Self-Debug-Qwen3.5-9B",
+      "type": "self_debug",
+      "enabled": true,
+      "optional": false,
+      "model_path": "/data/banlujie/RL-NL2SQL/ckpt/Qwen3.5-9B",
+      "max_new_tokens": 192,
+      "temperature": 0.0
+    },
+    {
+      "name": "Exec-RM-9B",
+      "type": "prm",
+      "enabled": true,
+      "optional": false,
+      "rm_path": "/data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm-exec-pointwise",
+      "rm_max_len": 2048,
+      "device": "auto"
+    },
+    {
+      "name": "Ours-Method-9B",
+      "type": "prm",
+      "enabled": true,
+      "optional": false,
+      "rm_path": "/data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm",
+      "rm_max_len": 2048,
+      "device": "auto"
+    },
+    {
+      "name": "w/o Topology",
+      "type": "prm",
+      "enabled": true,
+      "optional": true,
+      "rm_path": "/data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm-wo-topology-pointwise",
+      "rm_max_len": 2048,
+      "device": "auto"
+    },
+    {
+      "name": "w/o Fault Injection",
+      "type": "prm",
+      "enabled": true,
+      "optional": true,
+      "rm_path": "/data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm-wo-fault-injection",
+      "rm_max_len": 2048,
+      "device": "auto"
+    },
+    {
+      "name": "w/o Counterfactual",
+      "type": "prm",
+      "enabled": true,
+      "optional": true,
+      "rm_path": "/data/banlujie/RL-NL2SQL/ckpt/qwen3-0.6b-rm-wo-counterfactual",
+      "rm_max_len": 2048,
+      "device": "auto"
+    }
+  ]
+}
