@@ -49,6 +49,61 @@ from trainer.safe_dynamic_batch import apply_patch as _apply_safe_dynamic_batch_
 _apply_safe_dynamic_batch_patch()
 
 
+def _to_python_value(value):
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.item()
+        return value.detach().cpu().tolist()
+    return value
+
+
+def _first_sample_field(value):
+    value = _to_python_value(value)
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def _extract_clause_debug(info: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(info, dict):
+        return {"clause_scores": [], "clause_texts": [], "clause_score_pairs": []}
+
+    clause_scores = info.get("clause_scores")
+    clause_texts = info.get("clause_texts")
+    extra_logs = info.get("extra_logs")
+    if isinstance(extra_logs, dict):
+        if clause_scores is None:
+            clause_scores = extra_logs.get("clause_scores")
+        if clause_texts is None:
+            clause_texts = extra_logs.get("clause_texts")
+
+    clause_scores = _first_sample_field(clause_scores)
+    clause_texts = _first_sample_field(clause_texts)
+    clause_scores = _to_python_value(clause_scores)
+    clause_texts = _to_python_value(clause_texts)
+
+    if clause_scores is None:
+        clause_scores = []
+    if clause_texts is None:
+        clause_texts = []
+    if not isinstance(clause_scores, list):
+        clause_scores = [clause_scores]
+    if not isinstance(clause_texts, list):
+        clause_texts = [clause_texts]
+
+    pairs = []
+    for idx in range(max(len(clause_scores), len(clause_texts))):
+        score = clause_scores[idx] if idx < len(clause_scores) else None
+        text = clause_texts[idx] if idx < len(clause_texts) else None
+        pairs.append({"idx": idx, "clause": text, "score": score})
+
+    return {
+        "clause_scores": clause_scores,
+        "clause_texts": clause_texts,
+        "clause_score_pairs": pairs,
+    }
+
+
 @ray.remote
 class PPOTrainer(BasePPOTrainer):
     """
@@ -225,7 +280,8 @@ class PPOTrainer(BasePPOTrainer):
             _decode(experiences[0].sequences[0].unsqueeze(0), skip_special_tokens=True)[0],
             experiences[0].info["reward"][0].item(),
         ]
-        print(sample0)
+        clause_debug = _extract_clause_debug(experiences[0].info)
+        print({"sample": sample0, "clause_debug": clause_debug})
 
         # Balance experiences across DP ranks if needed.
         if self.args.use_dynamic_batch:

@@ -411,9 +411,13 @@ def generate_multiple_mutations(
                 "chosen_clause": chosen_clause,
                 "rejected_clause": rejected_clause,
                 "error_type": cand.error_type,
+                "target_clause": cand.clause,
+                "mutated_sql": mutated_sql,
             }
         )
         seen_sql.add(mutated_sql)
+        if max_mutations > 0 and len(results) >= max_mutations:
+            break
 
     return results
 

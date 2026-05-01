@@ -28,8 +28,22 @@ OUTPUT_JSONL  = "/data/banlujie/data/bird_dev/bird_dev_ppo.jsonl"
 _SYSTEM_TMPL = """\
 You are a helpful SQL expert assistant.
 The assistant first thinks about how to write the SQL query by analyzing the question, database schema and external knowledge, then provides the final SQL query.
-The reasoning process and SQL query are enclosed within <think> </think> and <answer> </answer> tags respectively.
+The reasoning process and SQL query are enclosed within <think> </think> and <answer> </answer> tags respectively, with no extra text outside these tags.
 The answer must contain the SQL query within ```sql ``` tags.
+Output format is mandatory:
+<think>
+...
+</think>
+<answer>
+```sql
+SELECT ...
+```
+</answer>
+Keep <think> concise (<=120 words) so generation can always complete <answer>.
+Never repeat the same sentence pattern in <think>. If you start repeating, stop thinking and immediately write the best SQL in <answer>.
+Do not self-correct with repeated "Wait, no" loops.
+Do not use <sql>...</sql>. Do not output plain-language explanation after </answer>.
+When a table/column identifier contains spaces, parentheses, %, or hyphens, always wrap it in backticks, including alias-qualified references (e.g., f.`District Code`).
 
 Database Schema:
 {db_details}"""
@@ -43,7 +57,7 @@ def load_tables(tables_path: str) -> dict:
     return {entry["db_id"]: entry for entry in data}
 
 
-def build_chat_prompt(schema_str: str, question: str, evidence: str) -> str:
+def build_chat_prompt(schema_str: str, question: str, evidence: str, db_id: str) -> str:
     """
     构建与 synsql 格式一致的 chat-template prompt。
     格式：<|im_start|>system\\n...schema...<|im_end|>
@@ -51,6 +65,8 @@ def build_chat_prompt(schema_str: str, question: str, evidence: str) -> str:
           <|im_start|>assistant\\n<think>
     """
     system_content = _SYSTEM_TMPL.format(db_details=schema_str)
+    if db_id:
+        system_content = f"Database ID: {db_id}\n" + system_content
     if evidence and evidence.strip():
         system_content += _EVIDENCE_SEP + evidence.strip()
 
@@ -97,7 +113,7 @@ def main():
                 skipped += 1
                 continue
 
-            prompt = build_chat_prompt(schema_str, question, evidence)
+            prompt = build_chat_prompt(schema_str, question, evidence, db_id)
 
             record = {
                 "prompt":   prompt,

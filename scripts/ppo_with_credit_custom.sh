@@ -112,14 +112,13 @@ python3 train_ppo_ray.py \
   --num_episodes 3 \
   --max_samples 200000 \
   --max_epochs 4 \
-   --prompt_max_len 1024 \
-   --generate_max_len 1024 \
+   --max_len 2048 \
    --zero_stage 3 \
    --bf16 \
   --actor_learning_rate 2e-6 \
   --critic_learning_rate 5e-6 \
   --lr_warmup_ratio 0.1 \
-  --init_kl_coef 0.001 \
+  --init_kl_coef 0.0005 \
    --prompt_data $PROMPT_DATA_PATH \
    --input_key $INPUT_KEY \
    --label_key SQL \

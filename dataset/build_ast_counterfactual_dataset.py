@@ -4,6 +4,7 @@ import math
 import json
 import os
 import random
+from functools import lru_cache
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 from tqdm import tqdm
@@ -77,10 +78,16 @@ def db_path_for(db_root: str, db_id: str) -> str:
     return os.path.join(db_root, db_id, f"{db_id}.sqlite")
 
 
-def execute_frozen_result(db_path: str, sql: str, timeout_seconds: int = 5):
+@lru_cache(maxsize=200000)
+def _execute_frozen_result_cached(db_path: str, sql: str, timeout_seconds: int = 5):
     return execute_sql_with_timeout(db_path, sql, timeout_seconds=timeout_seconds)
 
 
+def execute_frozen_result(db_path: str, sql: str, timeout_seconds: int = 5):
+    return _execute_frozen_result_cached(db_path, sql, timeout_seconds)
+
+
+@lru_cache(maxsize=200000)
 def result_equivalent(db_path: str, pred_sql: str, gt_sql: str, timeout_seconds: int = 5) -> Tuple[bool, str, str]:
     pred_res = execute_frozen_result(db_path, pred_sql, timeout_seconds)
     gt_res = execute_frozen_result(db_path, gt_sql, timeout_seconds)
@@ -96,6 +103,12 @@ def result_equivalent(db_path: str, pred_sql: str, gt_sql: str, timeout_seconds:
     if pred_res == gt_res:
         return True, "equivalent", ""
     return False, "different_result", ""
+
+
+def is_timeout_error(reason: str, info: str) -> bool:
+    if reason not in {"gt_error", "pred_error"}:
+        return False
+    return "timed out" in str(info).lower() or "timeout" in str(info).lower()
 
 
 def parse_sql(sql: str) -> Optional[exp.Expression]:

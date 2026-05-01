@@ -86,6 +86,8 @@ def train(args):
             "processed_logprobs" if args.enable_vllm_is_correction else None,
             agent_func_path=args.agent_func_path,
             remote_rm_url=args.remote_rm_url,
+            reasoning_parser=args.vllm_reasoning_parser,
+            reasoning_parser_plugin=args.vllm_reasoning_parser_plugin,
         )
 
     actor_model = RayActorGroup(
@@ -324,6 +326,18 @@ if __name__ == "__main__":
         default="tis",
         choices=["tis", "icepop", "seq-mask-tis"],
         help="vLLM IS correction type: tis (token-level clamp), icepop (token-level filter), seq-mask-tis (sequence-level geom mean)",
+    )
+    parser.add_argument(
+        "--vllm_reasoning_parser",
+        type=str,
+        default=None,
+        help="vLLM reasoning parser name, e.g. qwen3.",
+    )
+    parser.add_argument(
+        "--vllm_reasoning_parser_plugin",
+        type=str,
+        default=None,
+        help="Optional vLLM reasoning parser plugin module path.",
     )
 
     # Async training using ray

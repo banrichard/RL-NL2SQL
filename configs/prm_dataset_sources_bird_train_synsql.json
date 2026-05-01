@@ -1,0 +1,21 @@
+[
+  {
+    "name": "bird_train",
+    "input": "/data/banlujie/RL-NL2SQL/eval_res/eval_results_voting_bird_train_Qwen3.5-9B.json",
+    "tables_path": "/data/banlujie/data/bird_train/train/train_tables.json",
+    "db_roots": [
+      "/data/banlujie/data/bird_train/train/train_databases"
+    ],
+    "template_path": "/data/banlujie/RL-NL2SQL/templates/sql_generation_qwen.txt"
+  },
+  {
+    "name": "synsql_5k_train",
+    "input": "/data/banlujie/RL-NL2SQL/eval_res/eval_results_voting_synsql_5k_train_Qwen3.5-9B.json",
+    "tables_path": "/data/banlujie/data/synsql/tables.json",
+    "db_roots": [
+      "/data/banlujie/data/synsql/databases",
+      "/data/banlujie/data/synsql"
+    ],
+    "template_path": "/data/banlujie/RL-NL2SQL/templates/sql_generation_qwen.txt"
+  }
+]
